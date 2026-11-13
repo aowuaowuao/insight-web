@@ -655,7 +655,9 @@ onMounted(() => {
       </template>
     </EmptyState>
 
-    <template v-else>
+    <!-- rangeInvalid 时 items 一定是空的（上面已早退不发请求），但那不是「没有数据」，
+         而是条件本身无效；两者同屏会让用户以为放宽条件就能找到，实际要先改正日期 -->
+    <template v-else-if="!rangeInvalid">
       <EmptyState
         v-if="!items.length"
         :variant="hasFilters ? 'no-result' : 'no-data'"

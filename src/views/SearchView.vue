@@ -9,7 +9,6 @@
  * 时间范围与发布单位同样交给后端过滤。两处口径不同，别混：
  * - 日期过滤按**卡片上显示的那一天**（站点墙钟 published_at 的日期前缀，后端 _DAY_EXPR）
  * - 排序按**真实时刻** published_at_utc（混时区站点才不会按墙钟排错）
- * - 日期筛选按**卡片显示的那一天**（站点墙钟日，后端 db._DAY_EXPR），与界面所见一致
  * 细节见 src/api/search.ts 的说明与 news-insight/app/db.py 的 _DAY_EXPR / _TIME_EXPR。
  *
  * 两种模式：
@@ -206,7 +205,9 @@ const activeFilterCount = computed(() => {
   let count = selectedCategories.value.length
   if (timeRange.value !== 'all') count += 1
   count += selectedSources.value.length
-  if (highRelevanceOnly.value) count += 1
+  // 浏览模式（无关键词）下这个开关是禁用的，URL 里带 high=1 也不该计进角标，
+  // 否则出现「角标 1、但面板里没有任何可取消的项」
+  if (highRelevanceOnly.value && submitted.value) count += 1
   if (effectiveSort.value !== 'relevance') count += 1
   return count
 })
@@ -227,9 +228,23 @@ const statusText = computed(() => {
       return '没有找到与「' + submitted.value + '」相关的公告' + filterPart + tagPart
     }
     const partial =
-      loadedCount.value < totalCount.value ? '，当前展示前 ' + loadedCount.value + ' 条' : ''
+      !highRelevanceOnly.value && loadedCount.value < totalCount.value
+        ? '，当前展示前 ' + loadedCount.value + ' 条'
+        : ''
+    // 带了时间条件时，可能有命中关键词但两个时间列都判不出日期的条目被排除；
+    // 不说明的话用户会以为「明明库里有，怎么就少了这几篇」。
+    const undated =
+      (payload.value?.undated_excluded ?? 0) > 0
+        ? '（另有 ' + payload.value!.undated_excluded + ' 篇无发布时间未计入）'
+        : ''
+    const truncatedNote = payload.value?.truncated ? '；候选集已打满 2000 条，结果可能不完整' : ''
     const cost = elapsedMs.value === null ? '' : '，用时 ' + elapsedMs.value + ' 毫秒'
-    const high = highRelevanceOnly.value ? '，已按相关度 ≥ 80% 过滤当前结果' : ''
+    // 「共找到 N 条」是后端命中数（过滤前），分页器上的条数是过滤后的。两者不一致
+    // 必须当场说清，否则读者会以为分页器算错了；开了过滤时「当前展示前 N 条」
+    // 已被下面这句覆盖，不再重复。
+    const high = highRelevanceOnly.value
+      ? '，已按相关度 ≥ 80% 过滤为 ' + loadedCount.value + ' 条（分页按过滤后计算）'
+      : ''
     return (
       '关键词「' +
       submitted.value +
@@ -238,6 +253,8 @@ const statusText = computed(() => {
       ' 条结果' +
       filterPart +
       partial +
+      undated +
+      truncatedNote +
       tagPart +
       cost +
       high
@@ -410,8 +427,14 @@ function queryOf(state: RouteState): Record<string, string | string[] | undefine
     high: state.high ? '1' : undefined,
     // 第 1 页不写进 URL：保持链接干净，且「第 1 页」与「没翻过页」本来就是同一状态
     page: state.page > 1 ? String(state.page) : undefined,
-    // 快捷项（近 7 天 / 近 30 天）要连同语义一起记，否则刷新后会被还原成「自定义」
-    range: state.range === 'all' || state.range === 'custom' ? undefined : state.range,
+    // 时间范围的语义要连同 from/to 一起记：只写日期的话，用户先点「自定义」、还没填
+    // 日期时刷新会被还原成「全部时间」，输入框直接消失。
+    //
+    // 反过来说，这条必须写进 URL，否则会出现「点了自定义却弹回全部时间」的死循环：
+    // 点自定义 → 时间条件清空 → 生成的 query 与原 URL 不同 → router.replace 改 URL
+    // → applyFromRoute 发现既无 range 又无 from/to，还原成 'all' → 输入框不出现。
+    // 只有「全部时间」才是真正的默认值、可以不写。
+    range: state.range === 'all' ? undefined : state.range,
   }
 }
 
@@ -463,6 +486,9 @@ async function run(): Promise<void> {
       payload.value = result
       elapsedMs.value = Math.round(performance.now() - startedAt)
       rememberSearch(submitted.value)
+      // 页码越界（手改 URL、或加了筛选后总条数变少）：回到最后一页，别让界面停在
+      // 「共 189 条」却一张卡片都没有。检索模式数据已在本地，改页码不用重新请求。
+      clampSearchPage()
       browseItems.value = []
       browseTotal.value = 0
       browseUndated.value = 0
@@ -491,6 +517,18 @@ async function run(): Promise<void> {
       browseUndated.value = result.undatedExcluded
       payload.value = null
       elapsedMs.value = null
+      // 服务端分页：总数只有拿到结果才知道，越界时回到最后一页重取（与分类页同礼）
+      const lastPage = Math.max(1, Math.ceil(result.total / pageSize.value))
+      if (page.value > lastPage) {
+        page.value = lastPage
+        const nextQuery = queryOf(currentState())
+        if (JSON.stringify(route.query) !== JSON.stringify(nextQuery)) {
+          appliedSignature = signatureOf(currentState())
+          void router.replace({ query: nextQuery })
+        }
+        void run()
+        return
+      }
     } else {
       payload.value = null
       elapsedMs.value = null
@@ -530,8 +568,10 @@ function applyFromRoute(): void {
       : ''
   selectedSources.value = state.sources
   sort.value = state.sort
-  highRelevanceOnly.value = state.high
   timeRange.value = state.range
+  // 无关键词时「仅看高相关度」是禁用的（score 只有检索结果才有），URL 里残留的
+  // high=1 必须在这里丢掉，否则复选框选中且不可点，用户无法取消。
+  highRelevanceOnly.value = state.high && state.q !== ''
   if (state.range === 'all') {
     customFrom.value = ''
     customTo.value = ''
@@ -557,6 +597,18 @@ function applyFromRoute(): void {
     return
   }
   void run()
+}
+
+/** 检索模式页码收敛到最后一页（浏览模式由 run() 拿服务端 total 后自行回退） */
+function clampSearchPage(): void {
+  const lastPage = Math.max(1, Math.ceil(visibleSearchItems.value.length / pageSize.value))
+  if (page.value <= lastPage) return
+  page.value = lastPage
+  const nextQuery = queryOf(currentState())
+  if (JSON.stringify(route.query) === JSON.stringify(nextQuery)) return
+  // 先记账再改 URL：否则 router.replace 触发的 applyFromRoute 会认为状态变了、又跑一次
+  appliedSignature = signatureOf(currentState())
+  void router.replace({ query: nextQuery })
 }
 
 function submit(): void {
@@ -694,10 +746,10 @@ function changePageSize(size: number): void {
   applyPaging()
 }
 
-watch(highRelevanceOnly, () => {
-  page.value = 1
-})
-
+// 不要在这里 watch(highRelevanceOnly) 重置页码：从 URL 还原状态（applyFromRoute）
+// 时给 highRelevanceOnly 赋值会触发该 watch，把刚还原好的 page 又打回 1，而 URL
+// 里还是旧页码 —— 直达 /search?q=x&high=1&page=2 会看到「第 1 页」配 page=2 的 URL。
+// 用户手动切换开关时由 onHighChange 自己重置页码，够用。
 watch(() => route.fullPath, applyFromRoute)
 
 onMounted(() => {
@@ -953,7 +1005,7 @@ onMounted(() => {
     </EmptyState>
 
     <EmptyState
-      v-else-if="(submitted || browseCategory) && !cards.length"
+      v-else-if="(submitted || browseCategory) && !cards.length && !rangeInvalid"
       variant="no-result"
       title="没有找到相关公告"
       :description="`换个关键词试试，或点「重置筛选」去掉当前条件${

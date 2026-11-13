@@ -66,8 +66,21 @@ export interface SearchPayload {
   groups: SearchGroup[]
   /** 每类封顶后实际返回的条目总数，与 total 不同 */
   returned?: number
+  /**
+   * 候选集是否被打满（后端最多取 2000 行候选）。
+   *
+   * 为 true 时 total 只是下界，界面要说明「结果可能不完整」。生产库只有几百篇时
+   * 恒为 false，但它不是死字段：泛词（如「项目」）在大库上会真的触发。
+   */
   truncated?: boolean
   sort?: SearchSort
+  /**
+   * 带日期过滤时被排除的「两个时间列都判不出日期」的条数（不带过滤时恒为 0）。
+   *
+   * total 只数筛完剩下的，用户看到「共 20 条」而库里其实还有命中但没有日期的条目时
+   * 会以为丢了数据，所以要单独把这类条数说出来。
+   */
+  undated_excluded?: number
 }
 
 interface ApiEnvelope<T> {
