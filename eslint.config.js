@@ -41,24 +41,37 @@ export default tseslint.config(
         console: 'readonly',
         setTimeout: 'readonly',
         clearTimeout: 'readonly',
+        setInterval: 'readonly',
+        clearInterval: 'readonly',
         fetch: 'readonly',
         URL: 'readonly',
         AbortController: 'readonly',
         DOMException: 'readonly',
+        Event: 'readonly',
         MouseEvent: 'readonly',
+        KeyboardEvent: 'readonly',
+        FocusEvent: 'readonly',
         HTMLElement: 'readonly',
+        HTMLSelectElement: 'readonly',
+        HTMLInputElement: 'readonly',
+        HTMLButtonElement: 'readonly',
+        Element: 'readonly',
+        Node: 'readonly',
+        Storage: 'readonly',
+        performance: 'readonly',
       },
     },
     rules: {
-      // 允许 v-html（本项目不用，但避免误报）
+      // 禁止 v-html：项目已用切段渲染替代，规则锁住现状（XSS 面为零）
+      'vue/no-v-html': 'error',
       'vue/multi-word-component-names': 'off',
       // 未使用变量：允许以 _ 开头
       '@typescript-eslint/no-unused-vars': [
         'error',
         { argsIgnorePattern: '^_', varsIgnorePattern: '^_' },
       ],
-      // 显式 any 给警告而非报错
-      '@typescript-eslint/no-explicit-any': 'warn',
+      // 禁止显式 any（规范 2.2.1（四））：当前 src 内为 0，用 error 锁住
+      '@typescript-eslint/no-explicit-any': 'error',
 
       // ── 排版类规则交给 Prettier，ESLint 不管 ──────────────
       'vue/max-attributes-per-line': 'off',

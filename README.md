@@ -21,7 +21,18 @@ npm run dev      # 启动开发服务器，默认 http://localhost:5173
 | `npm run preview` | 本地预览构建产物 |
 | `npm run typecheck` | 只做类型检查，不产出 |
 | `npm run lint` | ESLint 检查并自动修复 |
+| `npm run lint:style` | Stylelint 检查 `src/**/*.{css,vue}` |
 | `npm run format` | Prettier 格式化 |
+| `npm test` | Vitest 单元测试（组件 + 工具 + store + http） |
+| `npm run test:coverage` | 带覆盖率门槛的单元测试（行/函数/语句 ≥80%，分支 ≥75%） |
+
+## 测试与门禁
+
+- 测试框架：Vitest + @vue/test-utils + jsdom，用例在 `tests/`，共 5 个 spec；
+- 覆盖范围：`src/components`（七个公共组件的 Props/Events 与导航交互）、`src/stores/auth`、`src/utils`、`src/api/http.ts`；当前实测 87.8% 语句 / 81.6% 分支；
+- 提交前建议依次跑：`npm run typecheck` → `npm run lint` → `npm run lint:style` → `npm test` → `npm run build`；
+- Git 钩子：husky `pre-commit` 跑 lint-staged（ESLint + Prettier），`commit-msg` 用 commitlint 校验 Conventional Commits；
+- 环境变量：`.env.development.local` 由开发者本地创建（`*.local` 已忽略，不入库）；`.env.production` / `.env.test` 只含接口地址，不含密钥。
 
 ## 技术栈
 
