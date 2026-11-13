@@ -1,7 +1,15 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import type { RouteRecordRaw } from 'vue-router'
+import { useAuthStore } from '@/stores/auth'
 
 const routes: RouteRecordRaw[] = [
+  {
+    path: '/login',
+    name: 'login',
+    component: () => import('@/views/LoginView.vue'),
+    // public: 不需要登录；hideNav: 登录页不显示顶部导航
+    meta: { title: '登录', public: true, hideNav: true },
+  },
   {
     path: '/',
     name: 'home',
@@ -32,19 +40,34 @@ const routes: RouteRecordRaw[] = [
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
   routes,
-  // 切换路由时回到页面顶部
   scrollBehavior(_to, _from, savedPosition) {
     return savedPosition ?? { top: 0 }
   },
 })
 
-// 全局前置守卫：统一改标题
-router.beforeEach((to, _from, next) => {
+// 全局前置守卫：未登录一律送回登录页
+router.beforeEach((to) => {
+  const auth = useAuthStore()
+
+  // 没登录 + 目标页不是公开页 -> 去登录，并记住原目标
+  if (to.meta.public !== true && !auth.isLoggedIn) {
+    return { name: 'login', query: { redirect: to.fullPath } }
+  }
+
+  // 已登录还想去登录页 -> 直接进首页
+  if (to.name === 'login' && auth.isLoggedIn) {
+    return { name: 'home' }
+  }
+
+  return true
+})
+
+// 后置钩子：统一改标题
+router.afterEach((to) => {
   const title = to.meta.title as string | undefined
   document.title = title
     ? `${title} - ${import.meta.env.VITE_APP_TITLE}`
     : import.meta.env.VITE_APP_TITLE
-  next()
 })
 
 export default router

@@ -1,12 +1,18 @@
 <script setup lang="ts">
+import { computed } from 'vue'
+import { useRoute } from 'vue-router'
 import AppNav from '@/components/AppNav.vue'
+
+const route = useRoute()
+
+// 登录页不显示顶部导航（也不显示账户名）
+const showNav = computed(() => route.meta.hideNav !== true)
 </script>
 
 <template>
   <div class="app">
-    <AppNav />
-    <main class="app__main">
-      <!-- 路由出口：配合路由懒加载，切换时只换这里 -->
+    <AppNav v-if="showNav" />
+    <main :class="['app__main', { 'app__main--bare': !showNav }]">
       <RouterView v-slot="{ Component }">
         <Transition name="fade" mode="out-in">
           <component :is="Component" />
@@ -29,6 +35,12 @@ import AppNav from '@/components/AppNav.vue'
   max-width: 960px;
   width: 100%;
   margin: 0 auto;
+}
+
+/* 登录页占满整屏，去掉内容区留白与宽度限制 */
+.app__main--bare {
+  padding: 0;
+  max-width: none;
 }
 
 .fade-enter-active,

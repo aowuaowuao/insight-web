@@ -35,15 +35,42 @@ npm run dev      # 启动开发服务器 http://localhost:5173
 
 ## 页面
 
-| 路由 | 页面 | 内容 |
-|---|---|---|
-| `/` | 首页 | 欢迎语 + 两个入口卡片（分类浏览、信息检索） |
-| `/category` | 分类浏览 | 一句说明 + 预留分类区 |
-| `/search` | 信息检索 | 标题「智能信息检索」+ 搜索框 + 热门词 + 结果列表 |
-| 其他 | 404 | 兜底页，显示当前访问的路径 |
+| 路由 | 页面 | 内容 | 是否需要登录 |
+|---|---|---|---|
+| `/login` | 登录 | 用户名 / 密码表单 | 否（公开） |
+| `/` | 首页 | 仅一句「欢迎进入智能申报信息检索平台」 | 是 |
+| `/category` | 分类浏览 | 一句说明 + 预留分类区 | 是 |
+| `/search` | 信息检索 | 标题「智能信息检索」+ 搜索框 + 热门词 + 结果列表 | 是 |
+| 其他 | 404 | 兜底页，显示当前访问的路径 | 是 |
+
+**未登录访问任何页面都会被重定向到 `/login`**，登录后回到原来想去的地址。
 
 搜索页目前用 5 条本地示例数据演示交互（`src/views/SearchView.vue` 里的 `sampleData`）。
 接后端时删掉示例数据，把 `search()` 换成接口调用即可。
+
+## 登录
+
+### 测试账号
+
+| 用户名 | 密码 |
+|---|---|
+| `test` | 见 `src/stores/auth.ts` 里的 `TEST_ACCOUNTS` |
+
+登录态存在 `localStorage`（key：`insight-web.auth.username`），刷新页面不会掉登录。
+右上角显示当前账户名，点「退出」清除登录态并回到登录页。
+
+### ⚠️ 这只是演示用的前端校验
+
+密码**明文写在前端代码里**，打开开发者工具就能看到，而且会被打进 `dist` 产物。
+这是「纯前端无法安全保存密码」的必然结果，不是疏忽。
+
+真实项目必须改成：
+
+1. 后端提供 `POST /api/login`，校验通过后下发 **HttpOnly + Secure Cookie**（或短期 token + 刷新机制）
+2. 前端不再持有密码，只保存「已登录」这一事实
+3. 路由守卫改为询问后端「当前会话是否有效」，而不是看本地变量
+
+`src/stores/auth.ts` 里的 `login()` 已经预留了这个形状——把本地比对换成 `await http.post('/api/login', ...)` 即可。
 
 ## 目录结构
 
@@ -62,18 +89,18 @@ insight-web/
 │   │   ├── useAsync.ts       # 异步三态封装（data/loading/error）
 │   │   └── useWindowSize.ts  # 窗口尺寸监听
 │   ├── router/
-│   │   └── index.ts          # 路由表 + 全局守卫 + 404 兜底
+│   │   └── index.ts          # 路由表 + 登录守卫 + 404 兜底
 │   ├── stores/
-│   │   ├── counter.ts        # 计数器（骨架示例）
-│   │   └── user.ts           # 用户状态（骨架示例）
+│   │   └── auth.ts           # 登录状态（本地测试账号）
 │   ├── styles/
 │   │   └── main.css          # 全局样式 + CSS 变量 + 暗色适配
 │   ├── views/
-│   │   ├── HomeView.vue      # 首页
+│   │   ├── LoginView.vue     # 登录页
+│   │   ├── HomeView.vue      # 首页（欢迎语）
 │   │   ├── CategoryView.vue  # 分类浏览
 │   │   ├── SearchView.vue    # 信息检索（智能信息检索）
 │   │   └── NotFoundView.vue  # 404
-│   ├── App.vue               # 根组件 + 路由过渡
+│   ├── App.vue               # 根组件 + 路由过渡（登录页隐藏导航）
 │   └── main.ts               # 应用入口
 ├── .env                      # 公共环境变量
 ├── .env.development          # 开发环境变量
@@ -105,16 +132,33 @@ component: () => import('@/views/HomeView.vue')
 ### 状态管理用 setup 语法
 
 ```ts
-export const useUserStore = defineStore('user', () => {
-  const currentUser = ref<User | null>(null)
-  const isLoggedIn = computed(() => token.value !== '' && currentUser.value !== null)
-  return { currentUser, isLoggedIn, login, logout }
+export const useAuthStore = defineStore('auth', () => {
+  const username = ref<string>(readStoredUsername())
+  const isLoggedIn = computed(() => username.value !== '')
+  return { username, isLoggedIn, login, logout }
 })
 ```
 
 比 Options 写法对 TS 推导更友好，也不用写 `this`。
 
 > ⚠️ 组件里解构 store 要用 `storeToRefs()`，直接解构会丢响应性。
+
+### 登录守卫
+
+守卫写在 `router.beforeEach` 里，靠路由 `meta` 区分公开页：
+
+```ts
+// router/index.ts
+{
+  path: '/login',
+  meta: { title: '登录', public: true, hideNav: true },
+}
+```
+
+- `public: true` —— 唯一允许未登录访问的页面
+- `hideNav: true` —— 登录页不渲染顶部导航（`App.vue` 里判断）
+
+守卫逻辑：未登录 + 目标非公开 → 跳登录并带上 `?redirect=原地址`；已登录还想进登录页 → 直接送首页。
 
 ### 环境变量
 
