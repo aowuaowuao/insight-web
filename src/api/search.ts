@@ -10,12 +10,23 @@ export interface SearchRelevance {
   matched_terms: string[]
 }
 
-/** 一条命中的标签（后端 article_tags 的形状，含置信度与原文依据） */
+/** 一条命中的标签（/v1/search 的形状：一定带 evidence 与 engine） */
 export interface SearchTag {
   tag: string
   confidence: number
-  evidence?: string | null
-  engine?: string
+  /** 命中依据：原文片段；后端允许为 null */
+  evidence: string | null
+  engine: string
+}
+
+/**
+ * /v1/articles 列表里的标签：字段比 /v1/search 少一个 evidence
+ * （列表不返回原文依据，省带宽）。两个端点的形状不同，不能共用一个类型。
+ */
+export interface ListTag {
+  tag: string
+  confidence: number
+  engine: string
 }
 
 export interface SearchItem {

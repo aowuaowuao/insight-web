@@ -6,8 +6,11 @@
 
 ```bash
 npm install      # 首次
-npm run dev      # 启动开发服务器 http://localhost:5173
+npm run dev      # 启动开发服务器，默认 http://localhost:5173
 ```
+
+> 端口被占用时 Vite 会自动换一个（比如 5183），**以终端输出的地址为准**。
+> dev server 只监听 localhost（IPv6 的 `::1`），所以要用 `http://localhost:端口` 访问；`http://127.0.0.1:端口` 可能连不上。
 
 ## 常用命令
 
@@ -40,21 +43,29 @@ npm run dev      # 启动开发服务器 http://localhost:5173
 | `/login` | 登录 | 用户名 / 密码表单 | 否（公开） |
 | `/` | 首页 | 仅一句「欢迎进入智能申报信息检索平台」 | 是 |
 | `/category` | 分类浏览 | 6 个大类（篇数 / 占比 / 平均置信度），展开看该类最新文章，可一键进入该类检索 | 是 |
-| `/search` | 信息检索 | 标题「智能信息检索」+ 搜索框 + 热门词 + 结果列表（**真实调用后端 `/v1/search`**，20 条/页，显示来源） | 是 |
+| `/search` | 信息检索 | 标题「智能信息检索」+ 搜索框 + 热门词 + 结果列表（**真实调用后端 `/v1/search`**，20 条/页，显示来源）；带 `?category=` 且没有关键词时切换成「该类全部文章」浏览模式（走 `/v1/articles` 分页） | 是 |
 | `/article/:id` | 文章详情 | 标题、来源、分类、原文链接、抽取字段、申报清单、标签、正文 | 是 |
 | 其他 | 404 | 兜底页，显示当前访问的路径 | 是 |
 
 **未登录访问任何页面都会被重定向到 `/login`**，登录后回到原来想去的地址。
 
-搜索页对接 `news-insight` 后端的 `GET /v1/search`，响应按 5 大类分组、类内已排好序。
+搜索页对接 `news-insight` 后端的 `GET /v1/search`，响应按 **6 个大类**分组（5 个业务大类 + `other` 兜底）、类内已排好序。
 前端把 `groups[].items[]` 按后端给的类顺序展平成一维列表，再按 **20 条/页** 分页。
+
+URL 上的 `q` 与 `category` 是这套页面的唯一真相来源：
+
+- `?q=关键词` —— 自动检索，且检索成功后会把关键词写回 URL，刷新和分享链接都能复现结果。
+- `?category=大类id` —— 只在该大类里检索；**没有 `q` 时切换成浏览模式**，用 `GET /v1/articles?category=` 分页列出该类的全部文章（`total` 是真实总数）。分类页的「浏览该类全部文章 →」就是跳到这里。
+- 在页内改 URL（取消筛选、点导航「信息检索」）会触发重新加载，筛选标签和结果不会错位。
 
 搜索结果里的每条包含 `article_id` / `source` / `url` / `title` / `published_at` / `tags` / `relevance.score`。
 `source` 通过 `src/constants/sources.ts` 映射成中文来源名（未知来源原样显示）；**单击结果**跳转 `/article/:id` 查看详情。
 
-> 两个容易踩的契约细节：
-> - `item.tags` 是**对象数组** `{tag, confidence, evidence, engine}`，不是字符串数组；要标签名用 `tags.map((t) => t.tag)`。
+> 三个容易踩的契约细节：
+> - `item.tags` 是**对象数组**，不是字符串数组；要标签名用 `tags.map((t) => t.tag)`。
+>   **但两个端点的字段不同**：`/v1/search` 是 `SearchTag {tag, confidence, evidence, engine}`，`/v1/articles` 列表是 `ListTag {tag, confidence, engine}`（没有 `evidence`，列表不返回原文依据）。类型分开声明，别混用。
 > - `groups[].count` 是**该类在候选库里的命中总数**，不是 `items.length`（items 被 `per_category` 截断）。页面展示条数用 `items` 的长度。
+> - `/v1/articles` 的 `meta {total, limit, offset}` 是**必有**的，前端不做可选兜底，以免后端契约漂移时静默退化成「只有一页」。
 
 分类浏览页数据来自：
 
@@ -62,7 +73,8 @@ npm run dev      # 启动开发服务器 http://localhost:5173
 - `GET /v1/categories/stats` —— 每类篇数与平均置信度
 - `GET /v1/articles?category=xxx&limit=10` —— 展开某类时拉该类最新文章
 
-点「在该类中检索」会跳到 `/search?category=xxx`，搜索页读取该参数后只在该大类里检索，页头有「取消筛选」。
+点上方的「在该类中检索」按钮会跳到 `/search?category=xxx`，搜索页读取该参数后只在该大类里检索，页头有「取消筛选」。
+展开面板底部的「浏览该类全部文章 →」同样跳 `/search?category=xxx`，但不带关键词，搜索页会进入浏览模式，分页列出该类全部文章（不会落到空页）。
 
 详情页数据来自：
 
@@ -106,7 +118,7 @@ insight-web/
 │   │   ├── articles.ts       # 文章列表（/v1/articles，支持按大类/标签过滤）
 │   │   ├── search.ts         # 检索（/v1/search）
 │   │   ├── article.ts        # 详情与申报清单
-│   │   └── fish.ts           # 业务接口（示例）
+│   │   └── fish.ts           # 骨架自带的示例接口（不是本项目业务，可删）
 │   ├── components/
 │   │   ├── AppNav.vue        # 顶部导航（三个分页 + 当前账户）
 │   │   └── BaseButton.vue    # 通用按钮（props/emits 示例）
@@ -115,6 +127,7 @@ insight-web/
 │   │   └── sources.ts        # 新闻来源 id ↔ 中文名
 │   ├── composables/
 │   │   ├── useAsync.ts       # 异步三态封装（data/loading/error）
+│   │   ├── useLatestRequest.ts # 请求序号守卫（只接受最后一次请求的结果）
 │   │   └── useWindowSize.ts  # 窗口尺寸监听
 │   ├── router/
 │   │   └── index.ts          # 路由表 + 登录守卫 + 404 兜底
@@ -126,7 +139,7 @@ insight-web/
 │   │   ├── LoginView.vue     # 登录页
 │   │   ├── HomeView.vue      # 首页（欢迎语）
 │   │   ├── CategoryView.vue  # 分类浏览（接 /v1/categories 与 /v1/articles）
-│   │   ├── SearchView.vue    # 信息检索（智能信息检索，支持 ?category= 类过滤）
+│   │   ├── SearchView.vue    # 信息检索（?q= 检索、?category= 类过滤或整类浏览）
 │   │   ├── ArticleView.vue   # 文章详情（/article/:id）
 │   │   └── NotFoundView.vue  # 404
 │   ├── App.vue               # 根组件 + 路由过渡（登录页隐藏导航）
@@ -226,6 +239,10 @@ INSIGHT_API_KEY=你的后端密钥
 > 后端没配 `INSIGHT_API_KEY` 时，`INSIGHT_API_KEY` 留空即可。
 > 后端**配了** key 而这里留空时，所有业务请求都会返回 401，页面提示里会直接说明要补这个变量。
 > **生产环境没有 Vite 代理**，需要 Nginx 反代 `/api` 到后端，或同域部署，否则仍会跨域。
+
+> ⚠️ **不要用 `npm run dev -- --host` 把开发服务器暴露到局域网**。
+> 代理会**无条件**给所有 `/api` 请求加上 `X-API-Key`，任何能连上这个端口的人就等于拿到后端全权：可以调 `POST /v1/analyze` 消耗 LLM 配额、`POST /v1/jobs` 触发抓取。
+> 需要多人访问时，请让后端单独签发只读 key，而不是共享这一个。
 
 ## VSCode 使用
 

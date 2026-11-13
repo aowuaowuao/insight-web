@@ -13,10 +13,14 @@ import {
   type ExtractionField,
 } from '@/api/article'
 import { categoryName } from '@/constants/categories'
+import { useLatestRequest } from '@/composables/useLatestRequest'
 import { sourceName } from '@/constants/sources'
 
 const route = useRoute()
 const router = useRouter()
+
+/** 请求序号守卫：快速连点两篇时，先发出的请求返回更晚也不能覆盖当前文章 */
+const latest = useLatestRequest()
 
 const article = ref<ArticleDetail | null>(null)
 const checklist = ref<ArticleChecklist | null>(null)
@@ -60,23 +64,30 @@ const extractionGroups = computed<ExtractionGroup[]>(() => {
 })
 
 async function load(id: string): Promise<void> {
+  const requestId = latest.next()
   loading.value = true
   error.value = ''
   article.value = null
   checklist.value = null
 
   try {
-    article.value = await getArticle(id)
+    const detail = await getArticle(id)
+    if (!latest.isCurrent(requestId)) return
+    article.value = detail
     // 清单是可选内容：没有（404）或失败都不该让整页报错
     try {
-      checklist.value = await getChecklist(id)
+      const checklistResult = await getChecklist(id)
+      if (!latest.isCurrent(requestId)) return
+      checklist.value = checklistResult
     } catch {
+      if (!latest.isCurrent(requestId)) return
       checklist.value = null
     }
   } catch (e) {
+    if (!latest.isCurrent(requestId)) return
     error.value = e instanceof Error ? e.message : '加载失败，请稍后重试'
   } finally {
-    loading.value = false
+    if (latest.isCurrent(requestId)) loading.value = false
   }
 }
 

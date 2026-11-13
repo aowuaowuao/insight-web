@@ -1,7 +1,7 @@
 import { http } from './http'
-import type { SearchTag } from './search'
+import type { ListTag } from './search'
 
-/** 列表里的一篇文章（GET /v1/articles 的 data 项，默认不带正文之外的详情字段） */
+/** 列表里的一篇文章（GET /v1/articles 的 data 项） */
 export interface ArticleListItem {
   article_id: string
   source: string
@@ -17,7 +17,8 @@ export interface ArticleListItem {
   extract_engine: string | null
   analyzed_at: string
   body: string | null
-  tags: SearchTag[]
+  /** 列表的标签没有 evidence 字段，与 /v1/search 的 SearchTag 不是同一个形状 */
+  tags: ListTag[]
 }
 
 export interface ArticleListPage {
@@ -27,9 +28,10 @@ export interface ArticleListPage {
   offset: number
 }
 
-interface ApiEnvelope<T> {
-  data: T
-  meta?: { total?: number; limit?: number; offset?: number }
+/** 后端这个端点的 meta 恒存在（app/main.py 显式返回），不做可选兜底以免掩盖契约漂移 */
+interface ArticleListEnvelope {
+  data: ArticleListItem[]
+  meta: { total: number; limit: number; offset: number }
 }
 
 export interface ArticleListOptions {
@@ -49,11 +51,6 @@ export async function listArticles(options: ArticleListOptions = {}): Promise<Ar
   params.set('limit', String(options.limit ?? 20))
   params.set('offset', String(options.offset ?? 0))
 
-  const res = await http.get<ApiEnvelope<ArticleListItem[]>>(`/v1/articles?${params.toString()}`)
-  return {
-    items: res.data,
-    total: res.meta?.total ?? res.data.length,
-    limit: res.meta?.limit ?? options.limit ?? 20,
-    offset: res.meta?.offset ?? options.offset ?? 0,
-  }
+  const res = await http.get<ArticleListEnvelope>(`/v1/articles?${params.toString()}`)
+  return { items: res.data, total: res.meta.total, limit: res.meta.limit, offset: res.meta.offset }
 }

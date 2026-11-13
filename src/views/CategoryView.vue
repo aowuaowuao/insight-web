@@ -8,6 +8,7 @@ import { useRouter } from 'vue-router'
 import { categoryStats, listCategories, type CategoryDef, type CategoryStat } from '@/api/category'
 import { listArticles, type ArticleListItem } from '@/api/articles'
 import { CATEGORY_ORDER } from '@/constants/categories'
+import { useLatestRequest } from '@/composables/useLatestRequest'
 import { sourceName } from '@/constants/sources'
 
 const router = useRouter()
@@ -24,16 +25,16 @@ const articlesLoading = ref(false)
 const articlesError = ref('')
 
 /**
- * 请求序号：快速连续展开不同大类时，先发出的请求可能后返回，
+ * 请求序号守卫：快速连续展开不同大类时，先发出的请求可能后返回，
  * 只接受最后一次请求的结果，避免 A 类的文章盖在 B 类的面板上。
  */
-let articlesRequestId = 0
+const latest = useLatestRequest()
 
 /** 后端返回顺序不可依赖，按词表固定顺序渲染 */
 const ordered = computed<CategoryDef[]>(() => {
   const byId = new Map(categories.value.map((c) => [c.id, c]))
   const list = CATEGORY_ORDER.map((id) => byId.get(id)).filter((c): c is CategoryDef => Boolean(c))
-  const rest = categories.value.filter((c) => !CATEGORY_ORDER.includes(c.id as never))
+  const rest = categories.value.filter((c) => !(CATEGORY_ORDER as readonly string[]).includes(c.id))
   return [...list, ...rest]
 })
 
@@ -70,11 +71,12 @@ async function load(): Promise<void> {
 }
 
 async function toggle(id: string): Promise<void> {
-  const requestId = ++articlesRequestId
+  const requestId = latest.next()
 
   if (activeId.value === id) {
     activeId.value = ''
     articles.value = []
+    articlesError.value = ''
     articlesLoading.value = false
     return
   }
@@ -85,17 +87,17 @@ async function toggle(id: string): Promise<void> {
   articlesLoading.value = true
   try {
     const page = await listArticles({ category: id, limit: 10 })
-    if (requestId !== articlesRequestId) return
+    if (!latest.isCurrent(requestId)) return
     articles.value = page.items
   } catch (e) {
-    if (requestId !== articlesRequestId) return
+    if (!latest.isCurrent(requestId)) return
     articlesError.value = e instanceof Error ? e.message : '加载文章失败，请稍后重试'
   } finally {
-    if (requestId === articlesRequestId) articlesLoading.value = false
+    if (latest.isCurrent(requestId)) articlesLoading.value = false
   }
 }
 
-/** 带着分类进入检索页（搜索页会读取 category 查询参数） */
+/** 带着分类进入检索页：没有关键词时该页按大类浏览全部文章 */
 function searchInCategory(id: string): void {
   void router.push({ name: 'search', query: { category: id } })
 }
@@ -117,7 +119,7 @@ onMounted(load)
     <header class="category__head">
       <h1>分类浏览</h1>
       <p class="category__desc">
-        全部已分析文章按 5 大类归档<template v-if="totalArticles">
+        全部已分析文章按 6 个大类归档<template v-if="totalArticles">
           （共 {{ totalArticles }} 篇）
 </template
         >。展开任意一类可看该类最新文章，也可以直接在该类里检索关键词。
@@ -134,12 +136,18 @@ onMounted(load)
             class="cat__toggle"
             type="button"
             :aria-expanded="activeId === item.id"
+            :aria-controls="`cat-panel-${item.id}`"
             @click="toggle(item.id)"
           >
             <span class="cat__name">{{ item.name }}</span>
             <span class="cat__count">{{ statOf[item.id]?.count ?? item.article_count }} 篇</span>
             <span class="cat__conf">平均置信度 {{ confidenceOf(item.id) }}</span>
-            <span class="cat__chevron" :class="{ 'cat__chevron--open': activeId === item.id }">▾</span>
+            <span
+              class="cat__chevron"
+              :class="{ 'cat__chevron--open': activeId === item.id }"
+              aria-hidden="true"
+              >▾</span
+            >
           </button>
           <button class="cat__search" type="button" @click="searchInCategory(item.id)">
             在该类中检索
@@ -152,7 +160,7 @@ onMounted(load)
 
         <p v-if="item.description" class="cat__desc">{{ item.description }}</p>
 
-        <div v-if="activeId === item.id" class="cat__panel">
+        <div v-if="activeId === item.id" :id="`cat-panel-${item.id}`" class="cat__panel">
           <p v-if="articlesLoading" class="category__hint">正在加载该类文章…</p>
           <p v-else-if="articlesError" class="category__error" role="alert">{{ articlesError }}</p>
           <template v-else-if="articles.length">
@@ -167,7 +175,7 @@ onMounted(load)
               </li>
             </ul>
             <button class="cat__more" type="button" @click="searchInCategory(item.id)">
-              查看全部 →
+              浏览该类全部文章 →
             </button>
           </template>
           <p v-else class="category__hint">该类暂时没有文章。</p>

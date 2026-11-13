@@ -48,8 +48,9 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
     const response = await fetch(url, {
       ...rest,
       signal: controller.signal,
+      // 只有真的带请求体时才声明 Content-Type：GET 带它会触发不必要的预检
       headers: {
-        'Content-Type': 'application/json',
+        ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
         ...headers,
       },
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
