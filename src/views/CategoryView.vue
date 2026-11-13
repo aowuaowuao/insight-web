@@ -1,114 +1,104 @@
 <script setup lang="ts">
 /**
- * 分类浏览页：GET /v1/categories 拿 6 个大类（含类内标签白名单与文章数），
- * 再按需 GET /v1/articles?category= 拉该类最新文章。
+ * 分类浏览页。
+ * 对照规范 2.2.1（二）模块三：6 大类分布、每类公告数量与占比、
+ * 点击分类查看该类公告并可直接进入「该类内检索」。
+ *
+ * 数据来自 news-insight：
+ * - GET /v1/categories      分类定义（名称、描述、类内标签白名单）
+ * - GET /v1/categories/stats 每类文章数与平均分类置信度
+ * - GET /v1/articles?category=xxx&limit=10 展开时取该类最新 10 篇
  */
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
+import ArticleCard from '@/components/ArticleCard.vue'
+import EmptyState from '@/components/EmptyState.vue'
+import ScoreBadge from '@/components/ScoreBadge.vue'
+import SkeletonList from '@/components/SkeletonList.vue'
 import { categoryStats, listCategories, type CategoryDef, type CategoryStat } from '@/api/category'
 import { listArticles, type ArticleListItem } from '@/api/articles'
 import { CATEGORY_ORDER } from '@/constants/categories'
-import { useLatestRequest } from '@/composables/useLatestRequest'
-import { sourceName } from '@/constants/sources'
 
 const router = useRouter()
 
 const categories = ref<CategoryDef[]>([])
 const stats = ref<CategoryStat[]>([])
-const loading = ref(false)
+const loading = ref(true)
 const error = ref('')
 
-/** 当前展开的大类（'' 表示都收起） */
-const activeId = ref('')
-const articles = ref<ArticleListItem[]>([])
-const articlesLoading = ref(false)
-const articlesError = ref('')
-
+const expanded = ref('')
+const articles = ref<Record<string, ArticleListItem[]>>({})
+const articleLoading = ref('')
+const articleError = ref('')
 /**
- * 请求序号守卫：快速连续展开不同大类时，先发出的请求可能后返回，
- * 只接受最后一次请求的结果，避免 A 类的文章盖在 B 类的面板上。
+ * 展开面板的请求序号：快速连续点开两个大类时，先发的请求可能后回来，
+ * 不做序号守卫会出现「标题是资金补贴、内容是项目申报」的错位。
  */
-const latest = useLatestRequest()
+let articlesRequestId = 0
 
-/** 后端返回顺序不可依赖，按词表固定顺序渲染 */
 const ordered = computed<CategoryDef[]>(() => {
-  const byId = new Map(categories.value.map((c) => [c.id, c]))
-  const list = CATEGORY_ORDER.map((id) => byId.get(id)).filter((c): c is CategoryDef => Boolean(c))
-  const rest = categories.value.filter((c) => !(CATEGORY_ORDER as readonly string[]).includes(c.id))
-  return [...list, ...rest]
-})
-
-const statOf = computed<Record<string, CategoryStat>>(() => {
-  const map: Record<string, CategoryStat> = {}
-  for (const item of stats.value) map[item.category] = item
-  return map
+  const known = CATEGORY_ORDER.map((id) => categories.value.find((item) => item.id === id)).filter(
+    (item): item is CategoryDef => Boolean(item),
+  )
+  const unknown = categories.value.filter(
+    (item) => !(CATEGORY_ORDER as readonly string[]).includes(item.id),
+  )
+  return [...known, ...unknown]
 })
 
 const totalArticles = computed(() => stats.value.reduce((sum, item) => sum + item.count, 0))
 
-function percent(count: number): number {
-  if (!totalArticles.value) return 0
-  return Math.round((count / totalArticles.value) * 100)
+function statOf(id: string): CategoryStat | undefined {
+  return stats.value.find((item) => item.category === id)
 }
 
-function confidenceOf(id: string): string {
-  const stat = statOf.value[id]
-  return stat ? `${(stat.avg_confidence * 100).toFixed(0)}%` : '—'
+/** 该类占全部已分析文章的比例（用于占比条） */
+function percent(id: string): number {
+  const total = totalArticles.value
+  if (!total) return 0
+  return Math.round(((statOf(id)?.count ?? 0) / total) * 100)
 }
 
 async function load(): Promise<void> {
   loading.value = true
   error.value = ''
   try {
-    const [defs, rows] = await Promise.all([listCategories(), categoryStats()])
+    const [defs, statList] = await Promise.all([listCategories(), categoryStats()])
     categories.value = defs
-    stats.value = rows
-  } catch (e) {
-    error.value = e instanceof Error ? e.message : '加载分类失败，请稍后重试'
+    stats.value = statList
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : '加载分类数据失败'
   } finally {
     loading.value = false
   }
 }
 
 async function toggle(id: string): Promise<void> {
-  const requestId = latest.next()
-
-  if (activeId.value === id) {
-    activeId.value = ''
-    articles.value = []
-    articlesError.value = ''
-    articlesLoading.value = false
+  if (expanded.value === id) {
+    expanded.value = ''
+    // 收起时作废在飞请求，避免它回填到已收起的面板
+    articlesRequestId += 1
+    articleLoading.value = ''
     return
   }
-
-  activeId.value = id
-  articles.value = []
-  articlesError.value = ''
-  articlesLoading.value = true
+  expanded.value = id
+  const requestId = ++articlesRequestId
+  articleLoading.value = id
+  articleError.value = ''
   try {
     const page = await listArticles({ category: id, limit: 10 })
-    if (!latest.isCurrent(requestId)) return
-    articles.value = page.items
-  } catch (e) {
-    if (!latest.isCurrent(requestId)) return
-    articlesError.value = e instanceof Error ? e.message : '加载文章失败，请稍后重试'
+    if (requestId !== articlesRequestId) return
+    articles.value = { ...articles.value, [id]: page.items }
+  } catch (err) {
+    if (requestId !== articlesRequestId) return
+    articleError.value = err instanceof Error ? err.message : '加载该类公告失败'
   } finally {
-    if (latest.isCurrent(requestId)) articlesLoading.value = false
+    if (requestId === articlesRequestId) articleLoading.value = ''
   }
 }
 
-/** 带着分类进入检索页：没有关键词时该页按大类浏览全部文章 */
 function searchInCategory(id: string): void {
   void router.push({ name: 'search', query: { category: id } })
-}
-
-function openArticle(id: string): void {
-  void router.push({ name: 'article', params: { id } })
-}
-
-function formatDate(value: string | null): string {
-  if (!value) return '暂无日期'
-  return value.replace('T', ' ').slice(0, 10)
 }
 
 onMounted(load)
@@ -116,69 +106,106 @@ onMounted(load)
 
 <template>
   <section class="category">
-    <header class="category__head">
-      <h1>分类浏览</h1>
-      <p class="category__desc">
-        全部已分析文章按 6 个大类归档<template v-if="totalArticles">
-          （共 {{ totalArticles }} 篇）
-</template
-        >。展开任意一类可看该类最新文章，也可以直接在该类里检索关键词。
-      </p>
+    <header class="page-head">
+      <div>
+        <h1>分类浏览</h1>
+        <p class="page-head__desc">
+          全部已分析文章按 6 个大类（含其他）归档（共
+          <span class="num">{{ totalArticles }}</span> 篇），点击分类查看该类公告。
+        </p>
+      </div>
+      <button class="btn btn--ghost" type="button" :disabled="loading" @click="load">
+        刷新数据
+      </button>
     </header>
 
-    <p v-if="loading" class="category__hint">正在加载分类…</p>
-    <p v-else-if="error" class="category__error" role="alert">{{ error }}</p>
+    <SkeletonList v-if="loading" :rows="6" :with-badge="false" />
 
-    <ul v-else class="category__list">
-      <li v-for="item in ordered" :key="item.id" class="cat">
+    <EmptyState v-else-if="error" variant="error" title="分类数据加载失败" :description="error">
+      <template #action>
+        <button class="btn btn--primary" type="button" @click="load">重新加载</button>
+      </template>
+    </EmptyState>
+
+    <ul v-else class="cat-list">
+      <li
+        v-for="item in ordered"
+        :key="item.id"
+        class="cat"
+        :class="{ 'cat--open': expanded === item.id }"
+      >
         <div class="cat__head">
           <button
             class="cat__toggle"
             type="button"
-            :aria-expanded="activeId === item.id"
+            :aria-expanded="expanded === item.id"
             :aria-controls="`cat-panel-${item.id}`"
             @click="toggle(item.id)"
           >
             <span class="cat__name">{{ item.name }}</span>
-            <span class="cat__count">{{ statOf[item.id]?.count ?? item.article_count }} 篇</span>
-            <span class="cat__conf">平均置信度 {{ confidenceOf(item.id) }}</span>
+            <span class="cat__count">
+              <span class="num">{{ statOf(item.id)?.count ?? 0 }}</span> 篇
+            </span>
+            <ScoreBadge :score="statOf(item.id)?.avg_confidence ?? null" label="平均置信度" />
+            <svg class="cat__chevron" viewBox="0 0 16 16" aria-hidden="true">
+              <path
+                d="M4 6l4 4 4-4"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.6"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+          </button>
+
+          <div class="cat__bar" role="img" :aria-label="`占全部文章 ${percent(item.id)}%`">
+            <span class="cat__bar-fill" :style="{ width: `${percent(item.id)}%` }" />
+          </div>
+
+          <div class="cat__meta">
             <span
-              class="cat__chevron"
-              :class="{ 'cat__chevron--open': activeId === item.id }"
-              aria-hidden="true"
-              >▾</span
+              >占全部 <span class="num">{{ percent(item.id) }}%</span></span
             >
-          </button>
-          <button class="cat__search" type="button" @click="searchInCategory(item.id)">
-            在该类中检索
-          </button>
-        </div>
-
-        <div class="cat__bar" :title="`占全部分析文章的 ${percent(statOf[item.id]?.count ?? 0)}%`">
-          <span class="cat__bar-fill" :style="{ width: percent(statOf[item.id]?.count ?? 0) + '%' }" />
-        </div>
-
-        <p v-if="item.description" class="cat__desc">{{ item.description }}</p>
-
-        <div v-if="activeId === item.id" :id="`cat-panel-${item.id}`" class="cat__panel">
-          <p v-if="articlesLoading" class="category__hint">正在加载该类文章…</p>
-          <p v-else-if="articlesError" class="category__error" role="alert">{{ articlesError }}</p>
-          <template v-else-if="articles.length">
-            <ul class="cat__articles">
-              <li v-for="article in articles" :key="article.article_id" class="cat__article">
-                <button class="cat__article-btn" type="button" @click="openArticle(article.article_id)">
-                  <span class="cat__article-title">{{ article.title }}</span>
-                  <span class="cat__article-meta">
-                    {{ sourceName(article.source) }} · {{ formatDate(article.published_at) }}
-                  </span>
-                </button>
-              </li>
-            </ul>
-            <button class="cat__more" type="button" @click="searchInCategory(item.id)">
-              浏览该类全部文章 →
+            <button class="btn btn--text" type="button" @click="searchInCategory(item.id)">
+              在该类中检索 →
             </button>
-          </template>
-          <p v-else class="category__hint">该类暂时没有文章。</p>
+          </div>
+
+          <p class="cat__desc">{{ item.description }}</p>
+        </div>
+
+        <div v-show="expanded === item.id" :id="`cat-panel-${item.id}`" class="cat__panel">
+          <SkeletonList v-if="articleLoading === item.id" :rows="3" :with-badge="false" />
+          <EmptyState
+            v-else-if="articleError"
+            variant="error"
+            title="该类公告加载失败"
+            :description="articleError"
+          />
+          <EmptyState
+            v-else-if="!(articles[item.id] ?? []).length"
+            variant="no-data"
+            title="该类暂无公告"
+            description="换个分类看看，或等下一轮分析完成。"
+          />
+          <div v-else class="cat__articles">
+            <ArticleCard
+              v-for="article in articles[item.id]"
+              :key="article.article_id"
+              :article-id="article.article_id"
+              :title="article.title"
+              :source="article.source"
+              :published-at="article.published_at"
+              :category="article.category"
+            />
+          </div>
+          <RouterLink
+            class="btn btn--primary"
+            :to="{ name: 'search', query: { category: item.id } }"
+          >
+            浏览该类全部文章
+          </RouterLink>
         </div>
       </li>
     </ul>
@@ -187,179 +214,212 @@ onMounted(load)
 
 <style scoped>
 .category {
-  max-width: 760px;
+  max-width: var(--layout-max-width);
   margin: 0 auto;
-  padding-top: 2rem;
+  padding: var(--space-6) var(--space-4) var(--space-10);
 }
 
-.category__head h1 {
-  margin-bottom: 0.6rem;
-  font-size: 1.8rem;
+.page-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+  margin-bottom: var(--space-6);
 }
 
-.category__desc {
-  margin: 0 0 0.4rem;
-  color: var(--muted);
-  font-size: 1rem;
+.page-head h1 {
+  margin: 0 0 var(--space-2);
+  font-size: var(--font-size-h1);
+  line-height: var(--line-height-heading);
+  color: var(--color-text);
 }
 
-.category__hint {
-  color: var(--muted);
-  font-size: 0.9rem;
+.page-head__desc {
+  margin: 0;
+  font-size: var(--font-size-body);
+  color: var(--color-text-secondary);
 }
 
-.category__error {
-  padding: 0.7rem 1rem;
-  border-radius: 10px;
-  background: rgba(239, 68, 68, 0.1);
-  color: #ef4444;
-  font-size: 0.88rem;
-}
-
-.category__list {
-  list-style: none;
+.cat-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin: 0;
   padding: 0;
-  margin: 1.4rem 0 0;
-  display: grid;
-  gap: 0.9rem;
+  list-style: none;
 }
 
 .cat {
-  padding: 1rem 1.2rem 1.1rem;
-  border: 1px solid var(--border);
-  border-radius: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card);
+  background: var(--color-bg);
+  box-shadow: var(--shadow-card);
+  transition: box-shadow var(--duration-base) var(--ease-out);
+}
+
+.cat:hover {
+  box-shadow: var(--shadow-card-hover);
+}
+
+.cat--open {
+  border-color: var(--color-primary-light);
 }
 
 .cat__head {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
+  padding: var(--space-4);
 }
 
 .cat__toggle {
   display: flex;
-  align-items: baseline;
-  gap: 0.7rem;
-  flex: 1;
-  min-width: 0;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
   padding: 0;
   border: none;
-  background: transparent;
-  color: inherit;
-  font-family: inherit;
+  background: none;
+  font: inherit;
   text-align: left;
+  color: var(--color-text);
   cursor: pointer;
 }
 
 .cat__name {
-  font-size: 1.05rem;
-  font-weight: 600;
+  font-size: var(--font-size-h3);
+  font-weight: var(--font-weight-bold);
+  color: var(--color-text);
 }
 
-.cat__count,
-.cat__conf {
-  color: var(--muted);
-  font-size: 0.82rem;
+.cat__count {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+}
+
+.cat__count .num {
+  font-size: var(--font-size-h3);
+  font-weight: var(--font-weight-bold);
+  color: var(--color-primary);
 }
 
 .cat__chevron {
+  width: 16px;
+  height: 16px;
   margin-left: auto;
-  color: var(--muted);
-  transition: transform 0.16s ease;
+  color: var(--color-text-muted);
+  transition: transform var(--duration-base) var(--ease-out);
 }
 
-.cat__chevron--open {
+.cat--open .cat__chevron {
   transform: rotate(180deg);
 }
 
-.cat__search {
-  padding: 0.3rem 0.7rem;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: transparent;
-  color: #3b82f6;
-  font-size: 0.8rem;
-  font-family: inherit;
-  cursor: pointer;
-}
-
-.cat__search:hover {
-  border-color: #3b82f6;
-}
-
 .cat__bar {
-  height: 4px;
-  margin: 0.7rem 0 0.5rem;
-  border-radius: 999px;
-  background: rgba(148, 163, 184, 0.2);
+  height: 6px;
+  margin: var(--space-3) 0 var(--space-2);
+  border-radius: var(--radius-pill);
+  background: var(--color-split);
   overflow: hidden;
 }
 
 .cat__bar-fill {
   display: block;
   height: 100%;
-  background: #3b82f6;
-  opacity: 0.75;
+  border-radius: var(--radius-pill);
+  background: var(--color-primary);
+  transition: width var(--duration-base) var(--ease-out);
+}
+
+.cat__meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
 }
 
 .cat__desc {
-  margin: 0;
-  color: var(--muted);
-  font-size: 0.86rem;
-  line-height: 1.6;
+  margin: var(--space-2) 0 0;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+  line-height: var(--line-height-base);
 }
 
 .cat__panel {
-  margin-top: 0.7rem;
-  padding-top: 0.6rem;
-  border-top: 1px dashed var(--border);
+  padding: 0 var(--space-4) var(--space-4);
+  border-top: 1px solid var(--color-split);
 }
 
 .cat__articles {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: grid;
-  gap: 0.35rem;
-}
-
-.cat__article-btn {
   display: flex;
   flex-direction: column;
-  gap: 0.15rem;
-  width: 100%;
-  padding: 0.45rem 0.55rem;
-  border: none;
-  border-radius: 8px;
-  background: transparent;
-  color: inherit;
-  font-family: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-.cat__article-btn:hover {
-  background: rgba(59, 130, 246, 0.08);
-}
-
-.cat__article-title {
-  font-size: 0.92rem;
-  line-height: 1.5;
-}
-
-.cat__article-meta {
-  color: var(--muted);
-  font-size: 0.78rem;
-}
-
-.cat__more {
-  margin-top: 0.5rem;
+  gap: var(--space-2);
+  margin: var(--space-4) 0;
   padding: 0;
-  border: none;
-  background: transparent;
-  color: #3b82f6;
-  font-size: 0.82rem;
+  list-style: none;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1);
+  padding: 0 var(--space-4);
+  height: 32px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-base);
+  font-size: var(--font-size-body);
   font-family: inherit;
+  line-height: 1;
   cursor: pointer;
+  transition:
+    color var(--duration-fast) var(--ease-out),
+    background-color var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out);
+}
+
+.btn--primary {
+  background: var(--color-primary);
+  color: var(--color-text-inverse);
+}
+
+.btn--primary:hover {
+  background: var(--color-primary-hover);
+}
+
+.btn--primary:active {
+  background: var(--color-primary-active);
+}
+
+.btn--ghost {
+  border-color: var(--color-border);
+  background: var(--color-bg);
+  color: var(--color-text-secondary);
+}
+
+.btn--ghost:hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+.btn--text {
+  height: auto;
+  padding: 0;
+  background: none;
+  color: var(--color-primary);
+}
+
+.btn--text:hover {
+  color: var(--color-primary-hover);
+}
+
+.btn:disabled {
+  background: var(--color-split);
+  border-color: var(--color-border);
+  color: var(--color-text-disabled);
+  cursor: not-allowed;
+}
+
+.cat__panel > .btn {
+  margin-top: var(--space-2);
 }
 </style>

@@ -1,752 +1,760 @@
 <script setup lang="ts">
 /**
- * 信息检索页：调用后端 GET /v1/search
- * - 结果由后端按 6 个大类分组并排好序，前端只负责展平 + 分页渲染
- * - 一页 20 条
- * - 带 ?category= 进来且没有关键词时，进入「该类全部文章」浏览模式
- *   （走 GET /v1/articles，后端分页），避免「查看全部」落到空页
+ * 信息检索页。
+ * 对照规范 2.2.1（二）模块五：搜索框、热门搜索、分类筛选、
+ * 结果列表（相关度评分 + 关键词高亮）、分页（每页条数可切换）、空状态。
+ *
+ * 排序完全由后端决定（score = 0.7 标签 + 0.2 标题 + 0.1 正文），前端不再排序；
+ * 分类筛选后仍按大类分组返回，这里按后端给的 groups 顺序展平，保持「类内相关度序」。
+ *
+ * 两种模式：
+ * - 有关键词：GET /v1/search（每类取 100 条，前端分页）
+ * - 无关键词且只选了一个大类：GET /v1/articles?category=（服务端分页，即「浏览该类全部文章」）
+ * URL 上的 q 与 category 是唯一真相来源，刷新/分享能还原同一状态。
  */
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { searchArticles, type SearchItem, type SearchPayload } from '@/api/search'
-import { listArticles, type ArticleListPage, type ArticleListItem } from '@/api/articles'
-import { categoryName } from '@/constants/categories'
+import AppPager from '@/components/AppPager.vue'
+import ArticleCard from '@/components/ArticleCard.vue'
+import EmptyState from '@/components/EmptyState.vue'
+import SkeletonList from '@/components/SkeletonList.vue'
+import { searchArticles, type SearchPayload } from '@/api/search'
+import { listArticles } from '@/api/articles'
 import { useLatestRequest } from '@/composables/useLatestRequest'
-import { sourceName } from '@/constants/sources'
+import { CATEGORY_ORDER, categoryName } from '@/constants/categories'
+import { listTags, tagName, type TagDef } from '@/api/tags'
+import { readJson, writeJson } from '@/utils/storage'
+import { STORAGE_KEYS } from '@/utils/storageKeys'
 
-/** 每页条数（需求：一页 20 条） */
-const PAGE_SIZE = 20
-
-const route = useRoute()
-const router = useRouter()
-
-/** 请求序号守卫：连点热门词 / 快速改关键词时，先发后到的响应会被丢弃 */
-const latest = useLatestRequest()
-
-/** 从分类浏览页跳进来时带的类过滤（URL 里可以有多个 category） */
-const selectedCategories = computed<string[]>(() => {
-  const raw = route.query.category
-  const list = Array.isArray(raw) ? raw : raw === undefined ? [] : [raw]
-  return list.filter((value): value is string => typeof value === 'string' && value !== '')
-})
-
-const selectedLabel = computed(() => selectedCategories.value.map(categoryName).join('、'))
-
-interface FlatItem extends SearchItem {
-  category: string
-  categoryLabel: string
-}
-
-/** 搜索与浏览两种模式共用的渲染单元，模板只认这个 */
-interface DisplayItem {
+interface CardItem {
   article_id: string
   title: string
   source: string
   published_at: string | null
-  categoryLabel: string
-  /** 相关度百分比：只有搜索模式有 */
+  category: string | null
   score: number | null
   matchedTerms: string[]
 }
 
+const PAGE_SIZE_OPTIONS = [10, 20, 50]
+const HOT_KEYWORDS = [
+  '项目申报',
+  '资金补贴',
+  '人才政策',
+  '企业资质',
+  '高新技术企业',
+  '专精特新',
+  '研发费用',
+  '科技成果转化',
+]
+
+const route = useRoute()
+const router = useRouter()
+const latest = useLatestRequest()
+
 const keyword = ref('')
 const submitted = ref('')
+const selectedCategories = ref<string[]>([])
+/** 标签词表：后端只给标签 id，命中标签要渲染成中文名 */
+const tags = ref<TagDef[]>([])
+const payload = ref<SearchPayload | null>(null)
+const browseItems = ref<CardItem[]>([])
+const browseTotal = ref(0)
 const loading = ref(false)
 const error = ref('')
-const payload = ref<SearchPayload | null>(null)
-const browsePage = ref<ArticleListPage | null>(null)
 const page = ref(1)
+const pageSize = ref(20)
+/** 历史搜索（最多 10 条，规范模块五（1）） */
+const searchHistory = ref<string[]>(readJson<string[]>(STORAGE_KEYS.SEARCH_HISTORY, []))
+/** 本次检索耗时（毫秒），规范模块五（6）要求展示 */
+const elapsedMs = ref<number | null>(null)
+/** 高级搜索里的「仅看高相关度」：后端没有该参数，只能对已返回的条目按 score 过滤 */
+const highRelevanceOnly = ref(false)
+const suggestOpen = ref(false)
+/** 键盘高亮的下标，-1 表示没有选中建议 */
+const suggestIndex = ref(-1)
 
-/** 没有已提交的关键词、但有且只有一个大类 -> 浏览该类的全部文章 */
-const browseCategory = computed<string>(() =>
-  !submitted.value && selectedCategories.value.length === 1 ? selectedCategories.value[0] : '',
+/** 上一次从 URL 应用过的状态，避免 watch 与 router.replace 互相触发死循环 */
+let applied = { q: '', cats: [] as string[] }
+
+const browseCategory = computed(() =>
+  submitted.value === '' && selectedCategories.value.length === 1
+    ? selectedCategories.value[0]
+    : '',
 )
-const browseMode = computed(() => browseCategory.value !== '')
 
-const hasSearched = computed(() => submitted.value !== '')
-
-/** 把 groups 按后端给的顺序展平成一维列表 */
-const flatItems = computed<FlatItem[]>(() => {
-  if (!payload.value) return []
-  return payload.value.groups.flatMap((group) =>
+const allSearchItems = computed<CardItem[]>(() => {
+  const groups = payload.value?.groups ?? []
+  return groups.flatMap((group) =>
     group.items.map((item) => ({
-      ...item,
-      category: group.category,
-      categoryLabel: categoryName(group.category),
+      article_id: item.article_id,
+      title: item.title,
+      source: item.source,
+      published_at: item.published_at,
+      category: item.category,
+      score: item.relevance.score,
+      matchedTerms: item.relevance.matched_terms,
     })),
   )
 })
 
-function toDisplay(item: ArticleListItem | FlatItem): DisplayItem {
-  const relevance = 'relevance' in item ? item.relevance : null
-  return {
-    article_id: item.article_id,
-    title: item.title,
-    source: item.source,
-    published_at: item.published_at,
-    categoryLabel: 'categoryLabel' in item ? item.categoryLabel : categoryName(item.category ?? ''),
-    score: relevance ? relevance.score : null,
-    matchedTerms: relevance ? relevance.matched_terms : [],
-  }
-}
+/** 高级搜索的「仅看高相关度」：score 是后端给的相关度（0-1），只有检索模式有 */
+const visibleSearchItems = computed<CardItem[]>(() =>
+  highRelevanceOnly.value
+    ? allSearchItems.value.filter((item) => (item.score ?? 0) >= 0.8)
+    : allSearchItems.value,
+)
 
-const totalPages = computed(() => {
-  const total = browseMode.value ? (browsePage.value?.total ?? 0) : flatItems.value.length
-  return Math.max(1, Math.ceil(total / PAGE_SIZE))
+const cards = computed<CardItem[]>(() => {
+  if (browseCategory.value) return browseItems.value
+  const start = (page.value - 1) * pageSize.value
+  return visibleSearchItems.value.slice(start, start + pageSize.value)
 })
 
-/** 当前页要渲染的条目：浏览模式由后端分页，搜索模式在前端切片 */
-const visibleItems = computed<DisplayItem[]>(() => {
-  if (browseMode.value) return (browsePage.value?.items ?? []).map(toDisplay)
-  const start = (page.value - 1) * PAGE_SIZE
-  return flatItems.value.slice(start, start + PAGE_SIZE).map(toDisplay)
+/** 总条数：检索模式用后端 total（可能大于前端拿到的条数），浏览模式用列表 meta.total */
+const totalCount = computed(() =>
+  browseCategory.value ? browseTotal.value : (payload.value?.total ?? 0),
+)
+/** 前端实际拿到的条数，只有检索模式会与 totalCount 不同 */
+const loadedCount = computed(() =>
+  browseCategory.value ? browseTotal.value : visibleSearchItems.value.length,
+)
+const totalPages = computed(() => Math.max(1, Math.ceil(loadedCount.value / pageSize.value)))
+
+const statusText = computed(() => {
+  if (loading.value) return '正在检索…'
+  if (submitted.value) {
+    const matched = payload.value?.matched_tags ?? []
+    const tagPart = matched.length
+      ? `，命中标签：${matched.map((id) => tagName(tags.value, id)).join('、')}`
+      : ''
+    if (!totalCount.value) return `没有找到与「${submitted.value}」相关的公告${tagPart}`
+    const partial =
+      loadedCount.value < totalCount.value ? `，当前展示前 ${loadedCount.value} 条` : ''
+    const cost = elapsedMs.value === null ? '' : `，用时 ${elapsedMs.value} 毫秒`
+    const high = highRelevanceOnly.value ? '，已按相关度 ≥ 80% 过滤当前结果' : ''
+    return `关键词「${submitted.value}」共命中 ${totalCount.value} 条${partial}${tagPart}${cost}${high}`
+  }
+  if (browseCategory.value) {
+    return `「${categoryName(browseCategory.value)}」共 ${browseTotal.value} 篇文章`
+  }
+  return '输入关键词开始检索，或从左侧选一个大类浏览该类全部文章。'
 })
 
-/** 页码按钮：最多显示当前页附近 5 个 */
-const pageNumbers = computed<number[]>(() => {
-  const total = totalPages.value
-  if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1)
-  const start = Math.min(Math.max(1, page.value - 2), total - 4)
-  return Array.from({ length: 5 }, (_, i) => start + i)
-})
-
-/** 浏览模式：拉当前大类的第 page 页文章（后端分页，total 是真实总数） */
-async function loadBrowse(): Promise<void> {
-  if (!browseCategory.value) {
-    // 退出浏览模式也算一次状态切换：作废在飞请求，否则它回来会把 browsePage 写脏。
-    // 作废后那个请求的 finally 不会再复位 loading，这里必须自己收尾，否则页面永远停在「正在检索」
-    latest.next()
-    loading.value = false
-    browsePage.value = null
-    return
-  }
-
-  const requestId = latest.next()
-  loading.value = true
-  error.value = ''
-  try {
-    const res = await listArticles({
-      category: browseCategory.value,
-      limit: PAGE_SIZE,
-      offset: (page.value - 1) * PAGE_SIZE,
-    })
-    if (!latest.isCurrent(requestId)) return
-    browsePage.value = res
-  } catch (e) {
-    if (!latest.isCurrent(requestId)) return
-    browsePage.value = null
-    error.value = e instanceof Error ? e.message : '加载该类文章失败，请稍后重试'
-  } finally {
-    if (latest.isCurrent(requestId)) loading.value = false
-  }
-}
-
-async function search(): Promise<void> {
+/** 输入过程中的实时建议（规范模块五（4））：历史搜索 + 热词，前缀/包含匹配，最多 8 条 */
+const suggestions = computed(() => {
   const q = keyword.value.trim()
-  if (!q) {
-    error.value = '请输入检索关键词'
-    return
+  if (!q) return []
+  const pool = [...searchHistory.value, ...HOT_KEYWORDS]
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const item of pool) {
+    if (out.length >= 8) break
+    if (seen.has(item) || item === q || !item.includes(q)) continue
+    seen.add(item)
+    out.push(item)
   }
+  return out
+})
 
+/** 只保留最近 10 条，重复关键词提到最前 */
+function rememberSearch(word: string): void {
+  const next = [word, ...searchHistory.value.filter((item) => item !== word)].slice(0, 10)
+  searchHistory.value = next
+  writeJson(STORAGE_KEYS.SEARCH_HISTORY, next)
+}
+
+function clearHistory(): void {
+  searchHistory.value = []
+  writeJson(STORAGE_KEYS.SEARCH_HISTORY, [])
+}
+
+function pickSuggestion(word: string): void {
+  suggestOpen.value = false
+  suggestIndex.value = -1
+  keyword.value = word
+  submit()
+}
+
+/** ↑/↓ 在建议间移动，Enter 选中，Esc 关闭（规范要求键盘可达） */
+function onInputKeydown(event: KeyboardEvent): void {
+  const list = suggestions.value
+  if (!list.length) return
+  if (event.key === 'ArrowDown') {
+    event.preventDefault()
+    suggestOpen.value = true
+    suggestIndex.value = (suggestIndex.value + 1) % list.length
+  } else if (event.key === 'ArrowUp') {
+    event.preventDefault()
+    suggestOpen.value = true
+    suggestIndex.value = (suggestIndex.value - 1 + list.length) % list.length
+  } else if (event.key === 'Escape') {
+    suggestOpen.value = false
+    suggestIndex.value = -1
+  } else if (event.key === 'Enter' && suggestOpen.value && suggestIndex.value >= 0) {
+    event.preventDefault()
+    pickSuggestion(list[suggestIndex.value])
+  }
+}
+
+/** 焦点移出输入框且不是移进建议列表时才关闭，Tab 键因此可用 */
+function onInputBlur(event: FocusEvent): void {
+  const next = event.relatedTarget as HTMLElement | null
+  if (next?.closest('.suggest')) return
+  suggestOpen.value = false
+  suggestIndex.value = -1
+}
+
+watch(suggestions, () => {
+  suggestIndex.value = -1
+})
+
+function normalizeCategories(value: unknown): string[] {
+  const list = Array.isArray(value) ? value : value === undefined || value === null ? [] : [value]
+  return list.filter((item): item is string => typeof item === 'string' && item !== '')
+}
+
+function sameCategories(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((item, index) => item === right[index])
+}
+
+async function run(): Promise<void> {
   const requestId = latest.next()
   loading.value = true
   error.value = ''
-
   try {
-    // per_category 取后端上限 100：先尽量多取，再在前端按 20 条/页切
-    const result = await searchArticles(q, {
-      perCategory: 100,
-      categories: [...selectedCategories.value],
-    })
-    if (!latest.isCurrent(requestId)) return
-    payload.value = result
-    browsePage.value = null
-    submitted.value = q
-    page.value = 1
-    // 把关键词写回 URL：刷新、分享链接都能复现这次检索
-    if (route.query.q !== q) {
-      void router.replace({ query: { ...route.query, q } })
+    if (submitted.value) {
+      const startedAt = performance.now()
+      const result = await searchArticles(submitted.value, {
+        perCategory: 100,
+        categories: selectedCategories.value,
+      })
+      if (!latest.isCurrent(requestId)) return
+      payload.value = result
+      elapsedMs.value = Math.round(performance.now() - startedAt)
+      rememberSearch(submitted.value)
+      browseItems.value = []
+      browseTotal.value = 0
+    } else if (browseCategory.value) {
+      const result = await listArticles({
+        category: browseCategory.value,
+        limit: pageSize.value,
+        offset: (page.value - 1) * pageSize.value,
+      })
+      if (!latest.isCurrent(requestId)) return
+      browseItems.value = result.items.map((item) => ({
+        article_id: item.article_id,
+        title: item.title,
+        source: item.source,
+        published_at: item.published_at,
+        category: item.category,
+        // 列表接口不返回相关度，分类置信度不冒充评分，这里不显示角标
+        score: null,
+        matchedTerms: [],
+      }))
+      browseTotal.value = result.total
+      payload.value = null
+    } else {
+      payload.value = null
+      elapsedMs.value = null
+      browseItems.value = []
+      browseTotal.value = 0
     }
-  } catch (e) {
+  } catch (err) {
     if (!latest.isCurrent(requestId)) return
-    error.value = e instanceof Error ? e.message : '检索失败，请稍后重试'
-    payload.value = null
+    error.value = err instanceof Error ? err.message : '检索失败，请稍后再试'
   } finally {
     if (latest.isCurrent(requestId)) loading.value = false
   }
 }
 
-/**
- * 清空关键词：有类过滤就回到浏览模式，否则回到占位。
- * 同时作废在飞请求并把 URL 上的 q 删掉——否则旧响应回来会覆盖刚清空的结果，
- * 刷新后 URL 里的 q 又会让页面自己检索起来，与「URL 是唯一真相」冲突。
- */
+/** 把 URL 上的 q / category 应用到组件状态；状态没变就不重复请求 */
+function applyFromRoute(): void {
+  const q = typeof route.query.q === 'string' ? route.query.q.trim() : ''
+  const cats = normalizeCategories(route.query.category)
+  if (q === applied.q && sameCategories(cats, applied.cats)) return
+  applied = { q, cats }
+  keyword.value = q
+  submitted.value = q
+  selectedCategories.value = cats
+  page.value = 1
+  void run()
+}
+
+function submit(): void {
+  const q = keyword.value.trim()
+  submitted.value = q
+  page.value = 1
+  applied = { q, cats: selectedCategories.value }
+  void router.replace({
+    query: { ...route.query, q: q === '' ? undefined : q },
+  })
+  void run()
+}
+
+function searchHot(word: string): void {
+  keyword.value = word
+  submit()
+}
+
+function toggleCategory(id: string): void {
+  const next = selectedCategories.value.includes(id)
+    ? selectedCategories.value.filter((item) => item !== id)
+    : [...selectedCategories.value, id]
+  page.value = 1
+  applied = { q: submitted.value, cats: next }
+  void router.replace({
+    query: { ...route.query, category: next.length ? next : undefined },
+  })
+  void run()
+}
+
+function clearCategory(): void {
+  page.value = 1
+  applied = { q: submitted.value, cats: [] }
+  void router.replace({ query: { ...route.query, category: undefined } })
+  void run()
+}
+
+/** 清空关键词：同时作废在飞请求，避免旧结果回填到已清空的页面 */
 function clear(): void {
   latest.next()
   loading.value = false
   keyword.value = ''
   submitted.value = ''
   payload.value = null
+  elapsedMs.value = null
+  browseItems.value = []
+  browseTotal.value = 0
   error.value = ''
   page.value = 1
-  if (route.query.q !== undefined) {
-    void router.replace({ query: { ...route.query, q: undefined } })
-  }
-  if (browseCategory.value) void loadBrowse()
+  applied = { q: '', cats: selectedCategories.value }
+  void router.replace({ query: { ...route.query, q: undefined } })
+  if (browseCategory.value) void run()
 }
 
-/**
- * 从分类页带过来的类过滤，用户可一键取消。
- * 只改 URL，真正的重新加载交给下面的 watch，避免「手动重查 + watch 重查」发两次请求。
- */
-async function clearCategory(): Promise<void> {
-  const query = { ...route.query }
-  delete query.category
-  await router.replace({ name: 'search', query })
+function changePage(next: number): void {
+  page.value = next
+  if (browseCategory.value) void run()
 }
 
-/**
- * 类过滤变化（取消筛选、导航栏点「信息检索」、从 A 类跳到 B 类）时重新加载。
- * Vue Router 会复用组件实例，不重新挂载，所以必须在这里兜住，否则筛选标签和结果会对不上。
- */
-watch(
-  () => selectedCategories.value.join(','),
-  () => {
-    page.value = 1
-    if (submitted.value) {
-      keyword.value = submitted.value
-      void search()
-    } else {
-      payload.value = null
-      void loadBrowse()
-    }
-  },
-)
+function changePageSize(size: number): void {
+  pageSize.value = size
+  page.value = 1
+  if (browseCategory.value) void run()
+}
 
-/** 带 ?q= 或 ?category= 进入时自动加载对应视图 */
-onMounted(() => {
-  const rawQ = route.query.q
-  const q = typeof rawQ === 'string' ? rawQ : ''
-  if (q.trim()) {
-    keyword.value = q
-    void search()
-  } else {
-    void loadBrowse()
-  }
+watch(highRelevanceOnly, () => {
+  page.value = 1
 })
 
-function useHotWord(word: string): void {
-  keyword.value = word
-  void search()
-}
-
-function goPage(target: number): void {
-  if (target < 1 || target > totalPages.value || target === page.value) return
-  page.value = target
-  if (browseMode.value) void loadBrowse()
-  window.scrollTo({ top: 0, behavior: 'smooth' })
-}
-
-function formatDate(value: string | null): string {
-  if (!value) return '暂无日期'
-  return value.replace('T', ' ').slice(0, 10)
-}
+watch(() => route.fullPath, applyFromRoute)
+onMounted(() => {
+  void applyFromRoute()
+  // 词表加载失败不影响检索，命中标签会退回显示标签 id
+  void listTags()
+    .then((list) => {
+      tags.value = list
+    })
+    .catch(() => undefined)
+})
 </script>
 
 <template>
   <section class="search">
-    <header class="search__head">
-      <h1 class="search__title">智能信息检索</h1>
-      <p class="search__subtitle">输入关键词，快速找到你关心的信息</p>
-      <p v-if="selectedCategories.length" class="search__filter">
-        仅检索「<strong>{{ selectedLabel }}</strong>」
-        <button type="button" class="search__filter-clear" @click="clearCategory">取消筛选</button>
+    <header class="page-head">
+      <h1>信息检索</h1>
+      <p class="page-head__desc">
+        输入关键词检索公告，结果按相关度排序并可按 6 个大类（含其他）过滤。
       </p>
     </header>
 
-    <!-- 搜索框 -->
-    <form class="search__box" role="search" @submit.prevent="search">
-      <span class="search__icon" aria-hidden="true">🔍</span>
-      <input
-        v-model="keyword"
-        class="search__input"
-        type="search"
-        placeholder="请输入关键词，例如：项目申报、资金补贴…"
-        aria-label="搜索关键词"
-        autocomplete="off"
-      />
-      <button v-if="keyword" class="search__clear" type="button" aria-label="清空" @click="clear">
-        ✕
-      </button>
-      <button class="search__btn" type="submit" :disabled="loading">
-        {{ loading ? '检索中…' : '搜索' }}
-      </button>
+    <form class="searchbox" role="search" @submit.prevent="submit">
+      <div class="searchbox__field">
+        <label class="visually-hidden" for="search-input">搜索关键词</label>
+        <input
+          id="search-input"
+          v-model="keyword"
+          class="searchbox__input"
+          type="search"
+          maxlength="100"
+          placeholder="如：项目申报、资金补贴、专精特新"
+          autocomplete="off"
+          role="combobox"
+          aria-autocomplete="list"
+          aria-controls="search-suggest"
+          :aria-expanded="suggestOpen && suggestions.length > 0"
+          :aria-activedescendant="suggestIndex >= 0 ? `search-suggest-${suggestIndex}` : undefined"
+          @focus="suggestOpen = true"
+          @blur="onInputBlur"
+          @keydown="onInputKeydown"
+        />
+        <ul
+          v-if="suggestOpen && suggestions.length"
+          id="search-suggest"
+          class="suggest"
+          role="listbox"
+          aria-label="搜索建议"
+        >
+          <li
+            v-for="(word, index) in suggestions"
+            :id="`search-suggest-${index}`"
+            :key="word"
+            class="suggest__item"
+            :class="{ 'suggest__item--active': index === suggestIndex }"
+            role="option"
+            :aria-selected="index === suggestIndex"
+            @mousedown.prevent="pickSuggestion(word)"
+            @mouseenter="suggestIndex = index"
+          >
+            {{ word }}
+          </li>
+        </ul>
+      </div>
+      <button class="btn btn--primary" type="submit" :disabled="loading">检索</button>
+      <button v-if="submitted" class="btn btn--ghost" type="button" @click="clear">清空</button>
     </form>
 
-    <!-- 热门关键词 -->
-    <div class="search__hot">
-      <span class="search__hot-label">热门：</span>
+    <div v-if="searchHistory.length" class="history">
+      <span class="history__label">历史搜索</span>
       <button
-        v-for="word in ['项目申报', '行业政策', '人才申报', '资金补贴']"
+        v-for="word in searchHistory"
         :key="word"
-        class="search__chip"
+        class="chip"
         type="button"
-        :disabled="loading"
-        @click="useHotWord(word)"
+        @click="searchHot(word)"
+      >
+        {{ word }}
+      </button>
+      <button class="btn btn--text" type="button" @click="clearHistory">清空历史</button>
+    </div>
+
+    <div class="hot">
+      <span class="hot__label">热门搜索</span>
+      <button
+        v-for="word in HOT_KEYWORDS"
+        :key="word"
+        class="chip"
+        type="button"
+        @click="searchHot(word)"
       >
         {{ word }}
       </button>
     </div>
 
-    <!-- 错误 -->
-    <p v-if="error" class="search__error" role="alert">{{ error }}</p>
-
-    <!-- 结果区 -->
-    <div class="search__results" aria-live="polite">
-      <template v-if="loading">
-        <p class="search__placeholder">正在向服务器检索，请稍候…</p>
-      </template>
-
-      <!-- 浏览器模式：某一大类的全部文章 -->
-      <template v-else-if="browseMode">
-        <p class="search__status">
-          「<strong>{{ selectedLabel }}</strong
-          >」共 <strong>{{ browsePage?.total ?? 0 }}</strong> 篇文章
-          <span class="search__status-extra">（输入关键词可在该类内检索）</span>
-        </p>
-
-        <ul v-if="visibleItems.length" class="result-list">
-          <li v-for="item in visibleItems" :key="item.article_id" class="result-item">
-            <RouterLink
-              :to="{ name: 'article', params: { id: item.article_id } }"
-              class="result"
-            >
-              <div class="result__head">
-                <span class="result__tag">{{ item.categoryLabel }}</span>
-                <span class="result__source">来源：{{ sourceName(item.source) }}</span>
-                <span class="result__date">{{ formatDate(item.published_at) }}</span>
-              </div>
-              <h2 class="result__title">{{ item.title }}</h2>
-              <span class="result__more">查看详情 →</span>
-            </RouterLink>
-          </li>
-        </ul>
-
-        <p v-else class="search__empty">该类暂时没有文章。</p>
-      </template>
-
-      <!-- 检索模式：后端按相关度排好序的命中结果 -->
-      <template v-else-if="hasSearched && payload">
-        <p class="search__status">
-          关于「<strong>{{ submitted }}</strong
-          >」可展示 <strong>{{ flatItems.length }}</strong> 条结果
-          <span v-if="payload.total > flatItems.length" class="search__status-extra">
-            （候选库命中约 {{ payload.total }} 条，每个大类最多取回 100 条）
-          </span>
-        </p>
-
-        <ul v-if="visibleItems.length" class="result-list">
-          <li v-for="item in visibleItems" :key="item.article_id" class="result-item">
-            <RouterLink
-              :to="{ name: 'article', params: { id: item.article_id } }"
-              class="result"
-            >
-              <div class="result__head">
-                <span class="result__tag">{{ item.categoryLabel }}</span>
-                <span class="result__source">来源：{{ sourceName(item.source) }}</span>
-                <span class="result__date">{{ formatDate(item.published_at) }}</span>
-                <span
-                  v-if="item.score !== null"
-                  class="result__score"
-                  :title="`相关度 ${item.score}`"
-                >
-                  相关度 {{ (item.score * 100).toFixed(0) }}%
-                </span>
-              </div>
-              <h2 class="result__title">{{ item.title }}</h2>
-              <p v-if="item.matchedTerms.length" class="result__terms">
-                命中：{{ item.matchedTerms.join(' / ') }}
-              </p>
-              <span class="result__more">查看详情 →</span>
-            </RouterLink>
-          </li>
-        </ul>
-
-        <p v-else class="search__empty">没有找到相关内容，换个关键词试试吧。</p>
-      </template>
-
-      <p v-else class="search__placeholder">
-        {{ error ? '检索失败，请重试或换个关键词。' : '搜索结果会显示在这里' }}
-      </p>
-
-      <!-- 分页：一页 20 条 -->
-      <nav v-if="(browseMode || hasSearched) && totalPages > 1" class="pager" aria-label="分页">
-        <button class="pager__btn" type="button" :disabled="page === 1" @click="goPage(page - 1)">
-          上一页
-        </button>
-
-        <button
-          v-for="n in pageNumbers"
-          :key="n"
-          class="pager__num"
-          type="button"
-          :class="{ 'pager__num--active': n === page }"
-          :aria-current="n === page ? 'page' : undefined"
-          @click="goPage(n)"
-        >
-          {{ n }}
-        </button>
-
-        <button
-          class="pager__btn"
-          type="button"
-          :disabled="page === totalPages"
-          @click="goPage(page + 1)"
-        >
-          下一页
-        </button>
-
-        <span class="pager__info">第 {{ page }} / {{ totalPages }} 页，每页 {{ PAGE_SIZE }} 条</span>
-      </nav>
+    <div class="filters">
+      <span class="filters__label">分类筛选</span>
+      <button
+        v-for="id in CATEGORY_ORDER"
+        :key="id"
+        class="chip"
+        :class="{ 'chip--active': selectedCategories.includes(id) }"
+        type="button"
+        :aria-pressed="selectedCategories.includes(id)"
+        @click="toggleCategory(id)"
+      >
+        {{ categoryName(id) }}
+      </button>
+      <button
+        v-if="selectedCategories.length"
+        class="btn btn--text"
+        type="button"
+        @click="clearCategory"
+      >
+        清除筛选
+      </button>
+      <label class="check">
+        <input v-model="highRelevanceOnly" type="checkbox" :disabled="!submitted" />
+        仅看高相关度（≥80%）
+      </label>
     </div>
+
+    <p class="status" role="status">{{ statusText }}</p>
+
+    <SkeletonList v-if="loading" :rows="5" />
+
+    <EmptyState v-else-if="error" variant="error" title="检索失败" :description="error">
+      <template #action>
+        <button class="btn btn--primary" type="button" @click="run">重试</button>
+      </template>
+    </EmptyState>
+
+    <EmptyState
+      v-else-if="(submitted || browseCategory) && !cards.length"
+      variant="no-result"
+      title="没有找到相关公告"
+      :description="`换个关键词试试，或去掉「${selectedCategories.map(categoryName).join('、') || '分类'}」筛选。`"
+    />
+
+    <EmptyState
+      v-else-if="!submitted && !browseCategory"
+      variant="no-data"
+      title="输入关键词开始检索"
+      description="也可以从分类筛选里选一个大类，浏览该类的全部文章。"
+    />
+
+    <template v-else>
+      <div v-if="cards.length" class="results">
+        <ArticleCard
+          v-for="card in cards"
+          :key="card.article_id"
+          :article-id="card.article_id"
+          :title="card.title"
+          :source="card.source"
+          :published-at="card.published_at"
+          :category="card.category"
+          :score="card.score"
+          :matched-terms="card.matchedTerms"
+        />
+      </div>
+
+      <AppPager
+        :page="page"
+        :total-pages="totalPages"
+        :page-size="pageSize"
+        :page-size-options="PAGE_SIZE_OPTIONS"
+        :total="loadedCount"
+        @update:page="changePage"
+        @update:page-size="changePageSize"
+      />
+    </template>
   </section>
 </template>
 
 <style scoped>
 .search {
-  max-width: 760px;
+  max-width: var(--layout-max-width);
   margin: 0 auto;
-  padding-top: 2.5rem;
+  padding: var(--space-6) var(--space-4) var(--space-10);
 }
 
-.search__head {
-  text-align: center;
-  margin-bottom: 2rem;
+.page-head h1 {
+  margin: 0 0 var(--space-2);
+  font-size: var(--font-size-h1);
+  line-height: var(--line-height-heading);
+  color: var(--color-text);
 }
 
-.search__title {
-  margin: 0 0 0.6rem;
-  font-size: clamp(1.7rem, 3.6vw, 2.3rem);
-  font-weight: 700;
-  letter-spacing: -0.01em;
+.page-head__desc {
+  margin: 0 0 var(--space-4);
+  font-size: var(--font-size-body);
+  color: var(--color-text-secondary);
 }
 
-.search__subtitle {
-  margin: 0;
-  color: var(--muted);
-  font-size: 0.97rem;
-}
-
-.search__filter {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.5rem;
-  margin: 0.7rem 0 0;
-  padding: 0.25rem 0.75rem;
-  border-radius: 999px;
-  background: rgba(59, 130, 246, 0.1);
-  color: #3b82f6;
-  font-size: 0.84rem;
-}
-
-.search__filter-clear {
-  padding: 0;
-  border: none;
-  background: transparent;
-  color: inherit;
-  font-family: inherit;
-  font-size: 0.8rem;
-  text-decoration: underline;
-  cursor: pointer;
-}
-
-/* ── 搜索框 ───────────────────────────────────────── */
-.search__box {
+.searchbox {
   display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.45rem 0.5rem 0.45rem 1rem;
-  border: 1.5px solid var(--border);
-  border-radius: 14px;
-  background: color-mix(in srgb, var(--bg) 70%, transparent);
-  transition:
-    border-color 0.18s ease,
-    box-shadow 0.18s ease;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
 }
 
-.search__box:focus-within {
-  border-color: #3b82f6;
-  box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.12);
-}
-
-.search__icon {
-  font-size: 1rem;
-  opacity: 0.7;
-}
-
-.search__input {
+.searchbox__input {
   flex: 1;
   min-width: 0;
-  padding: 0.55rem 0;
-  border: none;
-  background: transparent;
-  color: inherit;
-  font-size: 0.98rem;
+  height: 40px;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-base);
   font-family: inherit;
-  outline: none;
+  font-size: var(--font-size-body);
+  color: var(--color-text);
+  background: var(--color-bg);
+  transition: border-color var(--duration-fast) var(--ease-out);
 }
 
-.search__input::placeholder {
-  color: var(--muted);
-  opacity: 0.8;
+.searchbox__input:hover {
+  border-color: var(--color-primary-hover);
 }
 
-.search__clear {
-  border: none;
-  background: transparent;
-  color: var(--muted);
-  cursor: pointer;
-  font-size: 0.85rem;
-  padding: 0.3rem;
-  line-height: 1;
+.searchbox__input:focus {
+  border-color: var(--color-primary);
+  outline: 2px solid var(--color-primary-bg);
+  outline-offset: 0;
 }
 
-.search__clear:hover {
-  color: var(--fg);
-}
-
-.search__btn {
-  padding: 0.6rem 1.5rem;
-  border: none;
-  border-radius: 10px;
-  background: #3b82f6;
-  color: #fff;
-  font-size: 0.95rem;
-  font-weight: 500;
-  font-family: inherit;
-  cursor: pointer;
-  transition: background 0.18s ease;
-}
-
-.search__btn:hover:not(:disabled) {
-  background: #2563eb;
-}
-
-.search__btn:disabled {
-  opacity: 0.6;
-  cursor: progress;
-}
-
-/* ── 热门词 ───────────────────────────────────────── */
-.search__hot {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-  margin-top: 1rem;
-  font-size: 0.88rem;
-}
-
-.search__hot-label {
-  color: var(--muted);
-}
-
-.search__chip {
-  padding: 0.25rem 0.75rem;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: transparent;
-  color: var(--muted);
-  font-size: 0.84rem;
-  font-family: inherit;
-  cursor: pointer;
-  transition: all 0.18s ease;
-}
-
-.search__chip:hover:not(:disabled) {
-  border-color: #3b82f6;
-  color: #3b82f6;
-}
-
-/* ── 错误 ─────────────────────────────────────────── */
-.search__error {
-  margin: 1.2rem 0 0;
-  padding: 0.7rem 1rem;
-  border-radius: 10px;
-  background: rgba(239, 68, 68, 0.1);
-  color: #ef4444;
-  font-size: 0.88rem;
-}
-
-/* ── 结果区 ───────────────────────────────────────── */
-.search__results {
-  margin-top: 2rem;
-}
-
-.search__status {
-  color: var(--muted);
-  font-size: 0.9rem;
-  margin-bottom: 1rem;
-}
-
-.search__status strong {
-  color: var(--fg);
-}
-
-.search__status-extra {
-  font-size: 0.82rem;
-  opacity: 0.8;
-}
-
-.result-list {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-  display: grid;
-  gap: 0.8rem;
-}
-
-.result-item {
-  display: block;
-}
-
-.result {
-  display: block;
+.searchbox__field {
   position: relative;
-  padding: 1.05rem 1.3rem 1.6rem;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  color: inherit;
-  text-decoration: none;
-  cursor: pointer;
-  transition:
-    border-color 0.18s ease,
-    transform 0.18s ease,
-    box-shadow 0.18s ease;
+  display: flex;
+  flex: 1;
+  min-width: 0;
 }
 
-.result:hover,
-.result:focus-visible {
-  border-color: rgba(59, 130, 246, 0.45);
-  transform: translateY(-2px);
-  box-shadow: 0 8px 22px rgba(59, 130, 246, 0.08);
-  outline: none;
-}
-
-.result__source {
-  color: #3b82f6;
-  opacity: 0.85;
-}
-
-.result__more {
+.suggest {
   position: absolute;
-  right: 1.3rem;
-  bottom: 0.75rem;
-  color: #3b82f6;
-  font-size: 0.8rem;
-  opacity: 0;
-  transform: translateX(-4px);
-  transition: all 0.18s ease;
-}
-
-.result:hover .result__more,
-.result:focus-visible .result__more {
-  opacity: 1;
-  transform: translateX(0);
-}
-
-.result__head {
-  display: flex;
-  align-items: center;
-  gap: 0.7rem;
-  margin-bottom: 0.5rem;
-  font-size: 0.76rem;
-}
-
-.result__tag {
-  padding: 0.1em 0.6em;
-  border-radius: 999px;
-  background: rgba(59, 130, 246, 0.1);
-  color: #3b82f6;
-}
-
-.result__date {
-  color: var(--muted);
-}
-
-.result__score {
-  margin-left: auto;
-  color: var(--muted);
-}
-
-.result__title {
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 20;
   margin: 0;
-  font-size: 1rem;
-  line-height: 1.55;
+  padding: var(--space-1) 0;
+  list-style: none;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-base);
+  box-shadow: var(--shadow-popover, 0 6px 16px rgb(0 0 0 / 8%));
 }
 
-.result__terms {
-  margin: 0.45rem 0 0;
-  color: var(--muted);
-  font-size: 0.82rem;
-}
-
-.search__empty,
-.search__placeholder {
-  padding: 2.5rem 1rem;
-  text-align: center;
-  color: var(--muted);
-  font-size: 0.9rem;
-}
-
-/* ── 分页 ─────────────────────────────────────────── */
-.pager {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0.4rem;
-  margin-top: 1.6rem;
-  padding-top: 1.2rem;
-  border-top: 1px solid var(--border);
-}
-
-.pager__btn,
-.pager__num {
-  padding: 0.38rem 0.75rem;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: transparent;
-  color: inherit;
-  font-size: 0.86rem;
-  font-family: inherit;
+.suggest__item {
+  display: block;
+  padding: 8px var(--space-3);
+  font-size: var(--font-size-body);
+  color: var(--color-text);
   cursor: pointer;
-  transition: all 0.16s ease;
 }
 
-.pager__btn:hover:not(:disabled),
-.pager__num:hover {
-  border-color: #3b82f6;
-  color: #3b82f6;
+.suggest__item:hover,
+.suggest__item--active {
+  background: var(--color-primary-bg);
+  color: var(--color-primary);
 }
 
-.pager__btn:disabled {
-  opacity: 0.4;
+.history {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+.history__label {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+}
+
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.check input {
+  accent-color: var(--color-primary);
+}
+
+.check input:disabled + span,
+.check input:disabled {
   cursor: not-allowed;
 }
 
-.pager__num--active {
-  background: #3b82f6;
-  border-color: #3b82f6;
-  color: #fff;
+.hot,
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
 }
 
-.pager__num--active:hover {
-  color: #fff;
+.hot__label,
+.filters__label {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
 }
 
-.pager__info {
-  margin-left: auto;
-  color: var(--muted);
-  font-size: 0.82rem;
+.chip {
+  padding: 3px var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
+  background: var(--color-bg);
+  color: var(--color-text-secondary);
+  font-family: inherit;
+  font-size: var(--font-size-xs);
+  cursor: pointer;
+  transition:
+    color var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out),
+    background-color var(--duration-fast) var(--ease-out);
+}
+
+.chip:hover {
+  border-color: var(--color-primary-hover);
+  color: var(--color-primary);
+}
+
+.chip--active {
+  border-color: var(--color-primary);
+  background: var(--color-primary-bg);
+  color: var(--color-primary);
+}
+
+.status {
+  margin: 0 0 var(--space-3);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+}
+
+.results {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin: 0 0 var(--space-4);
+  padding: 0;
+  list-style: none;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 32px;
+  padding: 0 var(--space-4);
+  border: 1px solid transparent;
+  border-radius: var(--radius-base);
+  font-family: inherit;
+  font-size: var(--font-size-body);
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    color var(--duration-fast) var(--ease-out),
+    background-color var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out);
+}
+
+.searchbox .btn {
+  height: 40px;
+}
+
+.btn--primary {
+  background: var(--color-primary);
+  color: var(--color-text-inverse);
+}
+
+.btn--primary:hover {
+  background: var(--color-primary-hover);
+}
+
+.btn--primary:active {
+  background: var(--color-primary-active);
+}
+
+.btn--ghost {
+  border-color: var(--color-border);
+  background: var(--color-bg);
+  color: var(--color-text-secondary);
+}
+
+.btn--ghost:hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+.btn--text {
+  height: auto;
+  padding: 0;
+  background: none;
+  color: var(--color-primary);
+}
+
+.btn--text:hover {
+  color: var(--color-primary-hover);
+}
+
+.btn:disabled {
+  background: var(--color-split);
+  border-color: var(--color-border);
+  color: var(--color-text-disabled);
+  cursor: not-allowed;
 }
 </style>

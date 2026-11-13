@@ -1,0 +1,108 @@
+/**
+ * 设计令牌（Design Tokens）
+ *
+ * 全部取值来自《前端开发与软件测试技术规范书》2.2.1（三）UI 设计与交互规范：
+ * - 色彩体系：主色 #1890FF / 辅色 #40A9FF / 悬浮 #69C0FF / 点击 #096DD9，
+ *   中性灰阶 标题 #262626 / 正文 #595959 / 辅助 #8C8C8C / 边框 #D9D9D9 / 分割线 #F0F0F0，
+ *   功能色 成功 #52C41A / 警告 #FAAD14 / 错误 #FF4D4F
+ * - 字体规范：中文 PingFang SC / Microsoft YaHei，英文 Arial / Helvetica Neue，
+ *   数字 DIN；标题 16-24px、正文 14px、辅助 12px
+ * - 间距规范：基础单位 4px，常用 8 / 12 / 16 / 24 / 32px
+ * - 组件圆角：常规 4px、卡片 6px、弹窗 8px、标签 12px 或胶囊
+ * - 交互反馈：hover / active / disabled 三态 + 0.2s 以内过渡
+ *
+ * 组件里不要再写死颜色、字号、间距、圆角，一律引用这里的变量，
+ * 否则改一次主题要翻遍所有单文件组件。
+ */
+
+:root {
+  /* ── 品牌色 ───────────────────────────────────────── */
+  --color-primary: #1890ff;
+  --color-primary-hover: #40a9ff;
+  --color-primary-active: #096dd9;
+
+  /* 悬浮态更浅的一档，用于二级悬浮（如悬浮在已选中项上） */
+  --color-primary-light: #69c0ff;
+  --color-primary-bg: #e6f4ff;
+  --color-primary-bg-hover: #bae0ff;
+
+  /* ── 功能色 ───────────────────────────────────────── */
+  --color-success: #52c41a;
+  --color-success-bg: #f6ffed;
+  --color-warning: #faad14;
+  --color-warning-bg: #fffbe6;
+  --color-error: #ff4d4f;
+  --color-error-bg: #fff1f0;
+
+  /* ── 中性灰阶 ─────────────────────────────────────── */
+  --color-text: #262626;
+  --color-text-secondary: #595959;
+  --color-text-muted: #8c8c8c;
+  --color-text-disabled: #bfbfbf;
+  --color-text-inverse: #fff;
+  --color-border: #d9d9d9;
+  --color-split: #f0f0f0;
+  --color-bg: #fff;
+  --color-bg-layout: #f5f5f5;
+  --color-bg-hover: #fafafa;
+
+  /* 兼容旧变量名：现有组件用的是 --bg / --fg / --muted / --border */
+  --bg: var(--color-bg);
+  --fg: var(--color-text);
+  --muted: var(--color-text-muted);
+  --border: var(--color-border);
+
+  /* ── 字体 ─────────────────────────────────────────── */
+  --font-family-base:
+    'PingFang SC', 'Microsoft YaHei', 'Helvetica Neue', Arial, system-ui, -apple-system, sans-serif;
+  --font-family-number: 'DIN Alternate', 'DIN', 'Helvetica Neue', Arial, monospace;
+
+  /* 字号：标题 16-24px、正文 14px、辅助 12px */
+  --font-size-h1: 24px;
+  --font-size-h2: 20px;
+  --font-size-h3: 16px;
+  --font-size-body: 14px;
+  --font-size-sm: 13px;
+  --font-size-xs: 12px;
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+  --font-weight-bold: 600;
+  --line-height-base: 1.5715;
+  --line-height-heading: 1.35;
+
+  /* ── 间距：4px 基准 ───────────────────────────────── */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+
+  /* ── 圆角 ─────────────────────────────────────────── */
+  --radius-base: 4px;
+  --radius-card: 6px;
+  --radius-modal: 8px;
+  --radius-tag: 12px;
+  --radius-pill: 999px;
+
+  /* ── 阴影 ─────────────────────────────────────────── */
+  --shadow-card: 0 1px 4px rgb(0, 0, 0, 0.06);
+  --shadow-card-hover: 0 4px 16px rgb(0, 0, 0, 0.1);
+  --shadow-modal: 0 8px 32px rgb(0, 0, 0, 0.16);
+
+  /* ── 动效：按钮点击 0.2 秒以内 ─────────────────────── */
+  --duration-fast: 0.12s;
+  --duration-base: 0.2s;
+  --ease-out: cubic-bezier(0.215, 0.61, 0.355, 1);
+
+  /* ── 布局 ─────────────────────────────────────────── */
+
+  /* 规范要求适配 1366×768 及以上分辨率，正文区最宽按 1366 的可用宽度收口 */
+  --layout-max-width: 1200px;
+  --layout-nav-height: 64px;
+  --layout-sidebar-width: 200px;
+  --layout-sidebar-collapsed-width: 64px;
+  --layout-breakpoint-sm: 1366px;
+}
