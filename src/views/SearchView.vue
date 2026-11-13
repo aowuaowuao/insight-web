@@ -4,8 +4,8 @@
  * - 结果由后端按 5 大类分组并排好序，前端只负责展平 + 分页渲染
  * - 一页 20 条
  */
-import { computed, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, onMounted, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { searchArticles, type SearchItem, type SearchPayload } from '@/api/search'
 import { categoryName } from '@/constants/categories'
 import { sourceName } from '@/constants/sources'
@@ -13,7 +13,15 @@ import { sourceName } from '@/constants/sources'
 /** 每页条数（需求：一页 20 条） */
 const PAGE_SIZE = 20
 
+const route = useRoute()
 const router = useRouter()
+
+/** 从分类浏览页跳进来时带的类过滤（单个大类 id） */
+const category = computed<string>(() => {
+  const raw = route.query.category
+  const value = Array.isArray(raw) ? raw[0] : raw
+  return typeof value === 'string' ? value : ''
+})
 
 interface FlatItem extends SearchItem {
   category: string
@@ -68,7 +76,10 @@ async function search(): Promise<void> {
 
   try {
     // per_category 取后端上限 100：先尽量多取，再在前端按 20 条/页切
-    payload.value = await searchArticles(q, { perCategory: 100 })
+    payload.value = await searchArticles(q, {
+      perCategory: 100,
+      categories: category.value ? [category.value] : [],
+    })
     submitted.value = q
     page.value = 1
   } catch (e) {
@@ -86,6 +97,26 @@ function clear(): void {
   error.value = ''
   page.value = 1
 }
+
+/** 从分类页带过来的类过滤，用户可一键取消 */
+function clearCategory(): void {
+  const query = { ...route.query }
+  delete query.category
+  void router.replace({ name: 'search', query })
+  payload.value = null
+  submitted.value = ''
+  page.value = 1
+}
+
+/** 带类过滤进入时自动检索（关键词取 URL 里的 q，没有就等用户输入） */
+onMounted(() => {
+  const rawQ = route.query.q
+  const q = typeof rawQ === 'string' ? rawQ : ''
+  if (q.trim()) {
+    keyword.value = q
+    void search()
+  }
+})
 
 function useHotWord(word: string): void {
   keyword.value = word
@@ -114,6 +145,10 @@ function openArticle(articleId: string): void {
     <header class="search__head">
       <h1 class="search__title">智能信息检索</h1>
       <p class="search__subtitle">输入关键词，快速找到你关心的信息</p>
+      <p v-if="category" class="search__filter">
+        仅检索「<strong>{{ categoryName(category) }}</strong>」
+        <button type="button" class="search__filter-clear" @click="clearCategory">取消筛选</button>
+      </p>
     </header>
 
     <!-- 搜索框 -->
@@ -256,6 +291,29 @@ function openArticle(articleId: string): void {
   margin: 0;
   color: var(--muted);
   font-size: 0.97rem;
+}
+
+.search__filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.7rem 0 0;
+  padding: 0.25rem 0.75rem;
+  border-radius: 999px;
+  background: rgba(59, 130, 246, 0.1);
+  color: #3b82f6;
+  font-size: 0.84rem;
+}
+
+.search__filter-clear {
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
+  font-size: 0.8rem;
+  text-decoration: underline;
+  cursor: pointer;
 }
 
 /* ── 搜索框 ───────────────────────────────────────── */

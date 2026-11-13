@@ -10,9 +10,17 @@ export interface SearchRelevance {
   matched_terms: string[]
 }
 
+/** 一条命中的标签（后端 article_tags 的形状，含置信度与原文依据） */
+export interface SearchTag {
+  tag: string
+  confidence: number
+  evidence?: string | null
+  engine?: string
+}
+
 export interface SearchItem {
   article_id: string
-  /** 来源标识，如 prov-sci-tech */
+  /** 来源标识，如 most_kjjh / shpolicy_ssme */
   source: string
   /** 原文链接 */
   url: string
@@ -22,7 +30,8 @@ export interface SearchItem {
   content_length: number
   category: string | null
   category_confidence: number | null
-  tags: string[]
+  /** 后端返回的是对象数组，不是字符串数组（要标签名用 tags.map((t) => t.tag)） */
+  tags: SearchTag[]
   relevance: SearchRelevance
   /** include_body=true 时才有 */
   body?: string
@@ -30,6 +39,7 @@ export interface SearchItem {
 
 export interface SearchGroup {
   category: string
+  /** 该大类在候选库里的命中总数，不是 items 的长度（items 被 per_category 截断） */
   count: number
   items: SearchItem[]
 }

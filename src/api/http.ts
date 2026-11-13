@@ -64,13 +64,13 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
       } catch {
         // 响应不是 JSON（比如网关返回 HTML），忽略
       }
-      throw new HttpError(
-        response.status,
-        detail ||
-          (response.status === 502 || response.status === 503
+      const hint =
+        response.status === 401
+          ? '后端开启了鉴权：请在 .env.development.local 配置 INSIGHT_API_KEY（由 Vite 代理注入 X-API-Key）'
+          : response.status === 502 || response.status === 503
             ? '后端服务不可用，请确认 news-insight 已启动（默认 http://127.0.0.1:8020）'
-            : `请求失败：${response.status} ${response.statusText}`),
-      )
+            : `请求失败：${response.status} ${response.statusText}`
+      throw new HttpError(response.status, detail ? `${detail}（${hint}）` : hint)
     }
 
     // 204 无内容

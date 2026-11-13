@@ -39,7 +39,7 @@ npm run dev      # 启动开发服务器 http://localhost:5173
 |---|---|---|---|
 | `/login` | 登录 | 用户名 / 密码表单 | 否（公开） |
 | `/` | 首页 | 仅一句「欢迎进入智能申报信息检索平台」 | 是 |
-| `/category` | 分类浏览 | 一句说明 + 预留分类区 | 是 |
+| `/category` | 分类浏览 | 6 个大类（篇数 / 占比 / 平均置信度），展开看该类最新文章，可一键进入该类检索 | 是 |
 | `/search` | 信息检索 | 标题「智能信息检索」+ 搜索框 + 热门词 + 结果列表（**真实调用后端 `/v1/search`**，20 条/页，显示来源） | 是 |
 | `/article/:id` | 文章详情 | 标题、来源、分类、原文链接、抽取字段、申报清单、标签、正文 | 是 |
 | 其他 | 404 | 兜底页，显示当前访问的路径 | 是 |
@@ -51,6 +51,18 @@ npm run dev      # 启动开发服务器 http://localhost:5173
 
 搜索结果里的每条包含 `article_id` / `source` / `url` / `title` / `published_at` / `tags` / `relevance.score`。
 `source` 通过 `src/constants/sources.ts` 映射成中文来源名（未知来源原样显示）；**单击结果**跳转 `/article/:id` 查看详情。
+
+> 两个容易踩的契约细节：
+> - `item.tags` 是**对象数组** `{tag, confidence, evidence, engine}`，不是字符串数组；要标签名用 `tags.map((t) => t.tag)`。
+> - `groups[].count` 是**该类在候选库里的命中总数**，不是 `items.length`（items 被 `per_category` 截断）。页面展示条数用 `items` 的长度。
+
+分类浏览页数据来自：
+
+- `GET /v1/categories` —— 6 个大类的名称、说明、类内标签白名单与 `article_count`
+- `GET /v1/categories/stats` —— 每类篇数与平均置信度
+- `GET /v1/articles?category=xxx&limit=10` —— 展开某类时拉该类最新文章
+
+点「在该类中检索」会跳到 `/search?category=xxx`，搜索页读取该参数后只在该大类里检索，页头有「取消筛选」。
 
 详情页数据来自：
 
@@ -90,6 +102,10 @@ insight-web/
 ├── src/
 │   ├── api/
 │   │   ├── http.ts           # fetch 封装：类型化、超时、统一错误
+│   │   ├── category.ts       # 分类词表与统计（/v1/categories、/v1/categories/stats）
+│   │   ├── articles.ts       # 文章列表（/v1/articles，支持按大类/标签过滤）
+│   │   ├── search.ts         # 检索（/v1/search）
+│   │   ├── article.ts        # 详情与申报清单
 │   │   └── fish.ts           # 业务接口（示例）
 │   ├── components/
 │   │   ├── AppNav.vue        # 顶部导航（三个分页 + 当前账户）
@@ -109,8 +125,8 @@ insight-web/
 │   ├── views/
 │   │   ├── LoginView.vue     # 登录页
 │   │   ├── HomeView.vue      # 首页（欢迎语）
-│   │   ├── CategoryView.vue  # 分类浏览
-│   │   ├── SearchView.vue    # 信息检索（智能信息检索）
+│   │   ├── CategoryView.vue  # 分类浏览（接 /v1/categories 与 /v1/articles）
+│   │   ├── SearchView.vue    # 信息检索（智能信息检索，支持 ?category= 类过滤）
 │   │   ├── ArticleView.vue   # 文章详情（/article/:id）
 │   │   └── NotFoundView.vue  # 404
 │   ├── App.vue               # 根组件 + 路由过渡（登录页隐藏导航）
@@ -189,7 +205,8 @@ import.meta.env.VITE_APP_TITLE   // 有类型提示（见 env.d.ts）
 浏览器 → /api/v1/search → Vite 开发服务器 → http://127.0.0.1:8020/v1/search
 ```
 
-在项目根目录建 `.env.development.local`（或直接改 `.env.development`）：
+在项目根目录建 **`.env.development.local`**（`.gitignore` 已忽略 `*.local`，密钥不会进仓库）。
+**不要改 `.env.development`**：它被 git 跟踪，写进去的 `INSIGHT_API_KEY` 会随提交进仓库。
 
 ```bash
 # 前端请求前缀，保持 /api 即可
@@ -207,6 +224,7 @@ INSIGHT_API_KEY=你的后端密钥
 | `INSIGHT_API_KEY` | 代理自动加的 `X-API-Key` 头 | 否 |
 
 > 后端没配 `INSIGHT_API_KEY` 时，`INSIGHT_API_KEY` 留空即可。
+> 后端**配了** key 而这里留空时，所有业务请求都会返回 401，页面提示里会直接说明要补这个变量。
 > **生产环境没有 Vite 代理**，需要 Nginx 反代 `/api` 到后端，或同域部署，否则仍会跨域。
 
 ## VSCode 使用
