@@ -1,0 +1,38 @@
+{
+  // ── 目标与模块 ──────────────────────────────────────────
+  "compilerOptions": {
+    "target": "ES2022",
+    "useDefineForClassFields": true,
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["node", "vite/client"],
+
+    // ── 产物 ────────────────────────────────────────────────
+    "noEmit": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "allowImportingTsExtensions": false,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+
+    // ── 严格性 ──────────────────────────────────────────────
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitOverride": true,
+    "exactOptionalPropertyTypes": false,
+
+    // ── 路径别名 ────────────────────────────────────────────
+    // TS 6 起 baseUrl 已废弃，paths 直接相对 tsconfig 所在目录解析
+    "paths": {
+      "@/*": ["./src/*"]
+    },
+
+    // ── JSX（如需）──────────────────────────────────────────
+    "jsx": "preserve"
+  },
+  "include": ["src/**/*.ts", "src/**/*.d.ts", "src/**/*.vue", "vite.config.ts", "env.d.ts"],
+  "exclude": ["node_modules", "dist"]
+}

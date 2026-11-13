@@ -1,0 +1,44 @@
+{
+  // ── TypeScript：用工作区版本，和命令行保持一致 ──────────
+  "typescript.tsdk": "node_modules/typescript/lib",
+  "typescript.enablePromptUseWorkspaceTsdk": true,
+
+  // ── 保存即格式化 ────────────────────────────────────────
+  "editor.formatOnSave": true,
+  "editor.defaultFormatter": "esbenp.prettier-vscode",
+  "editor.codeActionsOnSave": {
+    "source.fixAll.eslint": "explicit",
+    "source.organizeImports": "explicit"
+  },
+
+  // ── Vue 文件：用 Volar 接管 ────────────────────────────
+  "[vue]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode",
+    "editor.tabSize": 2
+  },
+  "[typescript]": { "editor.tabSize": 2 },
+  "[json]": { "editor.tabSize": 2 },
+
+  // ── 内联类型提示 ────────────────────────────────────────
+  "typescript.inlayHints.variableTypes.enabled": true,
+  "typescript.inlayHints.parameterTypes.enabled": true,
+  "typescript.inlayHints.functionLikeReturnTypes.enabled": true,
+
+  // ── 路径别名提示（配合 tsconfig paths）─────────────────
+  "path-intellisense.mappings": {
+    "@": "${workspaceRoot}/src"
+  },
+
+  // ── 排除干扰 ────────────────────────────────────────────
+  "files.exclude": {
+    "**/node_modules": true,
+    "**/dist": true
+  },
+  "search.exclude": {
+    "**/node_modules": true,
+    "**/dist": true
+  },
+
+  // ── 让 ESLint 检查 .vue ────────────────────────────────
+  "eslint.validate": ["typescript", "vue"]
+}

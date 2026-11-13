@@ -1,0 +1,33 @@
+{
+  "name": "insight-web",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "智能化信息聚合与检索前端（Vite + Vue 3 + TypeScript）",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "vue-tsc --noEmit",
+    "lint": "eslint . --ext .ts,.vue --fix",
+    "format": "prettier --write \"src/**/*.{ts,vue,json,css}\""
+  },
+  "dependencies": {
+    "pinia": "^3.0.0",
+    "vue": "^3.5.45",
+    "vue-router": "^4.5.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^26.6.6",
+    "@vitejs/plugin-vue": "^6.0.11",
+    "eslint": "^10.14.0",
+    "eslint-plugin-vue": "^10.12.1",
+    "prettier": "^3.10.1",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.72.2",
+    "vite": "^8.3.8",
+    "vue-eslint-parser": "^10.4.2",
+    "vue-tsc": "^3.3.14"
+  }
+}
