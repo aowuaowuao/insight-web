@@ -1,79 +1,102 @@
 <script setup lang="ts">
 /**
- * 信息检索页：标题「智能信息检索」+ 搜索框
- * 目前用本地示例数据演示交互，接后端时把 search() 换成接口调用即可。
+ * 信息检索页：调用后端 GET /v1/search
+ * - 结果由后端按 5 大类分组并排好序，前端只负责展平 + 分页渲染
+ * - 一页 20 条
  */
 import { computed, ref } from 'vue'
+import { searchArticles, type SearchItem, type SearchPayload } from '@/api/search'
+import { categoryName } from '@/constants/categories'
 
-interface ResultItem {
-  id: number
-  title: string
+/** 每页条数（需求：一页 20 条） */
+const PAGE_SIZE = 20
+
+interface FlatItem extends SearchItem {
   category: string
-  summary: string
+  categoryLabel: string
 }
-
-// 本地示例数据（真实项目删掉，换成接口）
-const sampleData: ResultItem[] = [
-  {
-    id: 1,
-    title: '项目申报流程指南',
-    category: '项目申报',
-    summary: '从注册账号、填报材料到提交评审的完整流程说明。',
-  },
-  {
-    id: 2,
-    title: '行业政策速览',
-    category: '行业政策',
-    summary: '汇总近期发布的行业政策文件与解读要点。',
-  },
-  {
-    id: 3,
-    title: '人才申报常见问题',
-    category: '人才申报',
-    summary: '申报条件、材料清单与常见退回原因整理。',
-  },
-  {
-    id: 4,
-    title: '企业资质认定说明',
-    category: '企业资质',
-    summary: '高企、专精特新等资质的认定标准与准备要点。',
-  },
-  {
-    id: 5,
-    title: '资金补贴申报入口',
-    category: '资金补贴',
-    summary: '各类专项资金、奖补政策的申报入口与时间节点。',
-  },
-]
 
 const keyword = ref('')
 const submitted = ref('')
+const loading = ref(false)
+const error = ref('')
+const payload = ref<SearchPayload | null>(null)
+const page = ref(1)
 
-const results = computed<ResultItem[]>(() => {
-  const q = submitted.value.trim().toLowerCase()
-  if (!q) return []
-  return sampleData.filter(
-    (item) =>
-      item.title.toLowerCase().includes(q) ||
-      item.category.toLowerCase().includes(q) ||
-      item.summary.toLowerCase().includes(q),
+/** 把 groups 按后端给的顺序展平成一维列表 */
+const flatItems = computed<FlatItem[]>(() => {
+  if (!payload.value) return []
+  return payload.value.groups.flatMap((group) =>
+    group.items.map((item) => ({
+      ...item,
+      category: group.category,
+      categoryLabel: categoryName(group.category),
+    })),
   )
 })
 
-const hasSearched = computed(() => submitted.value.trim() !== '')
+const totalPages = computed(() => Math.max(1, Math.ceil(flatItems.value.length / PAGE_SIZE)))
 
-function search(): void {
-  submitted.value = keyword.value
+const pagedItems = computed<FlatItem[]>(() => {
+  const start = (page.value - 1) * PAGE_SIZE
+  return flatItems.value.slice(start, start + PAGE_SIZE)
+})
+
+const hasSearched = computed(() => submitted.value !== '')
+
+/** 页码按钮：最多显示当前页附近 5 个 */
+const pageNumbers = computed<number[]>(() => {
+  const total = totalPages.value
+  if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1)
+  const start = Math.min(Math.max(1, page.value - 2), total - 4)
+  return Array.from({ length: 5 }, (_, i) => start + i)
+})
+
+async function search(): Promise<void> {
+  const q = keyword.value.trim()
+  if (!q) {
+    error.value = '请输入检索关键词'
+    return
+  }
+
+  loading.value = true
+  error.value = ''
+
+  try {
+    // per_category 取后端上限 100：先尽量多取，再在前端按 20 条/页切
+    payload.value = await searchArticles(q, { perCategory: 100 })
+    submitted.value = q
+    page.value = 1
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : '检索失败，请稍后重试'
+    payload.value = null
+  } finally {
+    loading.value = false
+  }
 }
 
 function clear(): void {
   keyword.value = ''
   submitted.value = ''
+  payload.value = null
+  error.value = ''
+  page.value = 1
 }
 
 function useHotWord(word: string): void {
   keyword.value = word
-  search()
+  void search()
+}
+
+function goPage(target: number): void {
+  if (target < 1 || target > totalPages.value || target === page.value) return
+  page.value = target
+  window.scrollTo({ top: 0, behavior: 'smooth' })
+}
+
+function formatDate(value: string | null): string {
+  if (!value) return '暂无日期'
+  return value.replace('T', ' ').slice(0, 10)
 }
 </script>
 
@@ -98,7 +121,9 @@ function useHotWord(word: string): void {
       <button v-if="keyword" class="search__clear" type="button" aria-label="清空" @click="clear">
         ✕
       </button>
-      <button class="search__btn" type="submit">搜索</button>
+      <button class="search__btn" type="submit" :disabled="loading">
+        {{ loading ? '检索中…' : '搜索' }}
+      </button>
     </form>
 
     <!-- 热门关键词 -->
@@ -109,29 +134,79 @@ function useHotWord(word: string): void {
         :key="word"
         class="search__chip"
         type="button"
+        :disabled="loading"
         @click="useHotWord(word)"
       >
         {{ word }}
       </button>
     </div>
 
+    <!-- 错误 -->
+    <p v-if="error" class="search__error" role="alert">{{ error }}</p>
+
     <!-- 结果区 -->
     <div class="search__results" aria-live="polite">
-      <template v-if="hasSearched">
+      <template v-if="loading">
+        <p class="search__placeholder">正在向服务器检索，请稍候…</p>
+      </template>
+
+      <template v-else-if="hasSearched && payload">
         <p class="search__status">
           关于「<strong>{{ submitted }}</strong
-          >」的检索结果：共 <strong>{{ results.length }}</strong> 条
+          >」共找到 <strong>{{ flatItems.length }}</strong> 条结果
+          <span v-if="payload.total > flatItems.length" class="search__status-extra">
+            （候选库命中约 {{ payload.total }} 条）
+          </span>
         </p>
 
-        <ul v-if="results.length" class="result-list">
-          <li v-for="item in results" :key="item.id" class="result">
-            <span class="result__tag">{{ item.category }}</span>
+        <ul v-if="pagedItems.length" class="result-list">
+          <li v-for="item in pagedItems" :key="item.article_id" class="result">
+            <div class="result__head">
+              <span class="result__tag">{{ item.categoryLabel }}</span>
+              <span class="result__date">{{ formatDate(item.published_at) }}</span>
+              <span class="result__score" :title="`相关度 ${item.relevance.score}`">
+                相关度 {{ (item.relevance.score * 100).toFixed(0) }}%
+              </span>
+            </div>
             <h2 class="result__title">{{ item.title }}</h2>
-            <p class="result__summary">{{ item.summary }}</p>
+            <p v-if="item.relevance.matched_terms.length" class="result__terms">
+              命中：{{ item.relevance.matched_terms.join(' / ') }}
+            </p>
           </li>
         </ul>
 
         <p v-else class="search__empty">没有找到相关内容，换个关键词试试吧。</p>
+
+        <!-- 分页：一页 20 条 -->
+        <nav v-if="totalPages > 1" class="pager" aria-label="分页">
+          <button class="pager__btn" type="button" :disabled="page === 1" @click="goPage(page - 1)">
+            上一页
+          </button>
+
+          <button
+            v-for="n in pageNumbers"
+            :key="n"
+            class="pager__num"
+            type="button"
+            :class="{ 'pager__num--active': n === page }"
+            @click="goPage(n)"
+          >
+            {{ n }}
+          </button>
+
+          <button
+            class="pager__btn"
+            type="button"
+            :disabled="page === totalPages"
+            @click="goPage(page + 1)"
+          >
+            下一页
+          </button>
+
+          <span class="pager__info"
+            >第 {{ page }} / {{ totalPages }} 页，每页 {{ PAGE_SIZE }} 条</span
+          >
+        </nav>
       </template>
 
       <p v-else class="search__placeholder">搜索结果会显示在这里</p>
@@ -232,8 +307,13 @@ function useHotWord(word: string): void {
   transition: background 0.18s ease;
 }
 
-.search__btn:hover {
+.search__btn:hover:not(:disabled) {
   background: #2563eb;
+}
+
+.search__btn:disabled {
+  opacity: 0.6;
+  cursor: progress;
 }
 
 /* ── 热门词 ───────────────────────────────────────── */
@@ -262,9 +342,19 @@ function useHotWord(word: string): void {
   transition: all 0.18s ease;
 }
 
-.search__chip:hover {
+.search__chip:hover:not(:disabled) {
   border-color: #3b82f6;
   color: #3b82f6;
+}
+
+/* ── 错误 ─────────────────────────────────────────── */
+.search__error {
+  margin: 1.2rem 0 0;
+  padding: 0.7rem 1rem;
+  border-radius: 10px;
+  background: rgba(239, 68, 68, 0.1);
+  color: #ef4444;
+  font-size: 0.88rem;
 }
 
 /* ── 结果区 ───────────────────────────────────────── */
@@ -282,6 +372,11 @@ function useHotWord(word: string): void {
   color: var(--fg);
 }
 
+.search__status-extra {
+  font-size: 0.82rem;
+  opacity: 0.8;
+}
+
 .result-list {
   list-style: none;
   padding: 0;
@@ -291,7 +386,7 @@ function useHotWord(word: string): void {
 }
 
 .result {
-  padding: 1.1rem 1.3rem;
+  padding: 1.05rem 1.3rem;
   border: 1px solid var(--border);
   border-radius: 12px;
   transition: border-color 0.18s ease;
@@ -301,26 +396,40 @@ function useHotWord(word: string): void {
   border-color: rgba(59, 130, 246, 0.4);
 }
 
+.result__head {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  margin-bottom: 0.5rem;
+  font-size: 0.76rem;
+}
+
 .result__tag {
-  display: inline-block;
   padding: 0.1em 0.6em;
   border-radius: 999px;
   background: rgba(59, 130, 246, 0.1);
   color: #3b82f6;
-  font-size: 0.76rem;
-  margin-bottom: 0.5rem;
+}
+
+.result__date {
+  color: var(--muted);
+}
+
+.result__score {
+  margin-left: auto;
+  color: var(--muted);
 }
 
 .result__title {
-  margin: 0 0 0.35rem;
+  margin: 0;
   font-size: 1rem;
+  line-height: 1.55;
 }
 
-.result__summary {
-  margin: 0;
+.result__terms {
+  margin: 0.45rem 0 0;
   color: var(--muted);
-  font-size: 0.88rem;
-  line-height: 1.65;
+  font-size: 0.82rem;
 }
 
 .search__empty,
@@ -329,5 +438,56 @@ function useHotWord(word: string): void {
   text-align: center;
   color: var(--muted);
   font-size: 0.9rem;
+}
+
+/* ── 分页 ─────────────────────────────────────────── */
+.pager {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 1.6rem;
+  padding-top: 1.2rem;
+  border-top: 1px solid var(--border);
+}
+
+.pager__btn,
+.pager__num {
+  padding: 0.38rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font-size: 0.86rem;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all 0.16s ease;
+}
+
+.pager__btn:hover:not(:disabled),
+.pager__num:hover {
+  border-color: #3b82f6;
+  color: #3b82f6;
+}
+
+.pager__btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.pager__num--active {
+  background: #3b82f6;
+  border-color: #3b82f6;
+  color: #fff;
+}
+
+.pager__num--active:hover {
+  color: #fff;
+}
+
+.pager__info {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 0.82rem;
 }
 </style>

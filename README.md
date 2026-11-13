@@ -40,13 +40,16 @@ npm run dev      # 启动开发服务器 http://localhost:5173
 | `/login` | 登录 | 用户名 / 密码表单 | 否（公开） |
 | `/` | 首页 | 仅一句「欢迎进入智能申报信息检索平台」 | 是 |
 | `/category` | 分类浏览 | 一句说明 + 预留分类区 | 是 |
-| `/search` | 信息检索 | 标题「智能信息检索」+ 搜索框 + 热门词 + 结果列表 | 是 |
+| `/search` | 信息检索 | 标题「智能信息检索」+ 搜索框 + 热门词 + 结果列表（**真实调用后端 `/v1/search`**，20 条/页） | 是 |
 | 其他 | 404 | 兜底页，显示当前访问的路径 | 是 |
 
 **未登录访问任何页面都会被重定向到 `/login`**，登录后回到原来想去的地址。
 
-搜索页目前用 5 条本地示例数据演示交互（`src/views/SearchView.vue` 里的 `sampleData`）。
-接后端时删掉示例数据，把 `search()` 换成接口调用即可。
+搜索页对接 `news-insight` 后端的 `GET /v1/search`，响应按 5 大类分组、类内已排好序。
+前端把 `groups[].items[]` 按后端给的类顺序展平成一维列表，再按 **20 条/页** 分页。
+
+字段映射：`article_id` / `title` / `published_at` / `tags` / `relevance.score`。
+详情页需要的 `url`、`body` 不在搜索结果里（`include_body` 默认 false），点进详情时再查 `/v1/articles/{id}`。
 
 ## 登录
 
@@ -168,9 +171,33 @@ export const useAuthStore = defineStore('auth', () => {
 import.meta.env.VITE_APP_TITLE   // 有类型提示（见 env.d.ts）
 ```
 
-### 开发代理
+### 后端联调（已接好）
 
-`vite.config.ts` 里预留了 `/api` 代理配置（已注释），接后端时取消注释即可，避免开发期跨域。
+后端的 `app/main.py` **没有 CORS 中间件**，浏览器不能直连 8020，所以统一走 Vite 代理：
+
+```
+浏览器 → /api/v1/search → Vite 开发服务器 → http://127.0.0.1:8020/v1/search
+```
+
+在项目根目录建 `.env.development.local`（或直接改 `.env.development`）：
+
+```bash
+# 前端请求前缀，保持 /api 即可
+VITE_API_BASE_URL=/api
+
+# ↓ 服务端变量，不带 VITE_ 前缀，不会打进前端产物
+INSIGHT_API_URL=http://127.0.0.1:8020
+INSIGHT_API_KEY=你的后端密钥
+```
+
+| 变量 | 作用 | 是否暴露给浏览器 |
+|---|---|---|
+| `VITE_API_BASE_URL` | 前端请求前缀，默认 `/api` | 是（会打进产物） |
+| `INSIGHT_API_URL` | Vite 代理转发目标 | 否 |
+| `INSIGHT_API_KEY` | 代理自动加的 `X-API-Key` 头 | 否 |
+
+> 后端没配 `INSIGHT_API_KEY` 时，`INSIGHT_API_KEY` 留空即可。
+> **生产环境没有 Vite 代理**，需要 Nginx 反代 `/api` 到后端，或同域部署，否则仍会跨域。
 
 ## VSCode 使用
 
