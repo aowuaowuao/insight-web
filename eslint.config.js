@@ -45,6 +45,7 @@ export default tseslint.config(
         clearInterval: 'readonly',
         fetch: 'readonly',
         URL: 'readonly',
+        Blob: 'readonly',
         AbortController: 'readonly',
         DOMException: 'readonly',
         Event: 'readonly',

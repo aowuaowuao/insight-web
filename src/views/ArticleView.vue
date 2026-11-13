@@ -9,13 +9,20 @@
  * - GET /v1/articles/{id}            详情 + 标签 + 结构化抽取
  * - GET /v1/articles/{id}/checklist  申报清单（无清单时 404 → null）
  * 收藏与浏览历史存 localStorage（后端暂无收藏接口），结构见 ProfileView 的 StoredArticle。
+ *
+ * 规范缺口（后端暂未提供对应能力，界面按「能取到的就展示、取不到就明说」处理）：
+ * - 浏览量、正文 HTML（后端 body 是纯文本）、目录跳转：接口没有，正文按段落渲染。
+ * - 「相关推荐 3-5 条」：调 /v1/articles?category=X 排除自身取 5 条同分类最新公告，
+ *   属同分类近似，不是相似度推荐（后端没有相似度接口）。取不到时整块不渲染。
  */
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import EmptyState from '@/components/EmptyState.vue'
+import ArticleCard from '@/components/ArticleCard.vue'
 import ScoreBadge from '@/components/ScoreBadge.vue'
 import SkeletonList from '@/components/SkeletonList.vue'
 import { getArticle, getChecklist, type ArticleChecklist, type ArticleDetail } from '@/api/article'
+import { listArticles, type ArticleListItem } from '@/api/articles'
 import { listTags, tagName, type TagDef } from '@/api/tags'
 import { categoryName } from '@/constants/categories'
 import { sourceName } from '@/constants/sources'
@@ -64,35 +71,59 @@ const paragraphs = computed(() =>
     .filter(Boolean),
 )
 
-const fields = computed(() => {
+/**
+ * 关键要素。
+ *
+ * 规范模块四（3）要求「要素缺失项标注『未提取到』」，所以字段清单以模型登记过的
+ * schema 为基准铺满，取不到值的照样出一行并标空；整篇都没有抽取结果时，按
+ * FIELD_ORDER 里的标准要素逐条出「未提取到」——让用户明确知道是没抽到，
+ * 而不是以为页面上压根没有这项信息。
+ */
+interface FieldRow {
+  key: string
+  label: string
+  /** 空串表示这一项没抽到，界面标「未提取到」 */
+  value: string
+  verified: boolean
+  confidence: number
+}
+
+function fieldValueOf(raw: unknown): string {
+  return Array.isArray(raw)
+    ? raw
+        .map((item) => String(item))
+        .filter(Boolean)
+        .join('；')
+    : String(raw ?? '').trim()
+}
+
+const fields = computed<FieldRow[]>(() => {
   const extractions = article.value?.extractions ?? {}
-  const rows: {
-    key: string
-    label: string
-    value: string
-    verified: boolean
-    confidence: number
-  }[] = []
+  const rows: FieldRow[] = []
+  const seen = new Set<string>()
   for (const schema of Object.values(extractions)) {
     for (const [key, field] of Object.entries(schema)) {
-      const value = Array.isArray(field.value)
-        ? field.value.map((item) => String(item)).join('；')
-        : String(field.value ?? '').trim()
-      if (!value) continue
+      if (seen.has(key)) continue
+      seen.add(key)
       rows.push({
         key,
         label: FIELD_LABELS[key] ?? key,
-        value,
+        value: fieldValueOf(field.value),
         verified: field.verified,
         confidence: field.confidence,
       })
     }
   }
-  return rows.sort((a, b) => {
-    const left = FIELD_ORDER.indexOf(a.key)
-    const right = FIELD_ORDER.indexOf(b.key)
-    return (left < 0 ? FIELD_ORDER.length : left) - (right < 0 ? FIELD_ORDER.length : right)
-  })
+  if (rows.length === 0) {
+    for (const key of FIELD_ORDER) {
+      rows.push({ key, label: FIELD_LABELS[key], value: '', verified: false, confidence: 0 })
+    }
+  }
+  const rank = (key: string): number => {
+    const index = FIELD_ORDER.indexOf(key)
+    return index < 0 ? FIELD_ORDER.length : index
+  }
+  return rows.sort((a, b) => rank(a.key) - rank(b.key))
 })
 
 function tagLabel(id: string): string {
@@ -141,12 +172,72 @@ function rememberVisit(item: ArticleDetail): void {
   writeJson(STORAGE_KEYS.VIEW_HISTORY, next)
 }
 
+/**
+ * 相关推荐：同大类的最新 5 条，排除自己。
+ * 后端没有相似度接口，这里只能做「同分类近似」，标题也如实写成「同分类公告」，
+ * 不冒充个性化推荐。
+ */
+const related = ref<ArticleListItem[]>([])
+
+async function loadRelated(id: string, category: string | null, requestId: number): Promise<void> {
+  if (!category) {
+    related.value = []
+    return
+  }
+  try {
+    const page = await listArticles({ category, limit: 6, sort: 'published_desc' })
+    if (requestId !== loadRequestId) return
+    related.value = page.items.filter((item) => item.article_id !== id).slice(0, 5)
+  } catch {
+    // 推荐是次要信息，失败就整块不渲染，不打扰正文阅读
+    if (requestId === loadRequestId) related.value = []
+  }
+}
+
+/** 申报清单弹窗（规范模块四（7）：弹窗展示 + 支持下载） */
+const checklistOpen = ref(false)
+
+/** Esc 关闭弹窗：规范要求三态交互完整，弹窗不能只靠点 ✕ 才能关 */
+function onKeydown(event: KeyboardEvent): void {
+  if (event.key === 'Escape' && checklistOpen.value) checklistOpen.value = false
+}
+
+onMounted(() => window.addEventListener('keydown', onKeydown))
+onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
+
+function downloadChecklist(): void {
+  const items = checklist.value?.items ?? []
+  const item = article.value
+  if (!items.length || !item) return
+  const lines = [
+    item.title,
+    '来源：' + sourceName(item.source),
+    '发布时间：' + formatDateTime(item.published_at),
+    '原文：' + item.url,
+    '',
+    '申报准备清单：',
+    ...items.map((row, index) => `${index + 1}. ${row.text}`),
+  ]
+  // 用 Blob 下载纯文本：不引进第三方库，也不新增依赖
+  const blob = new Blob(['\ufeff' + lines.join('\r\n')], { type: 'text/plain;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `申报准备清单-${item.article_id.slice(0, 8)}.txt`
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  URL.revokeObjectURL(url)
+}
+
 async function load(id: string): Promise<void> {
   const requestId = ++loadRequestId
   loading.value = true
   error.value = ''
   article.value = null
   checklist.value = null
+  related.value = []
+  checklistOpen.value = false
   try {
     const detail = await getArticle(id)
     if (requestId !== loadRequestId) return
@@ -164,6 +255,7 @@ async function load(id: string): Promise<void> {
         if (requestId === loadRequestId) checklist.value = result
       })
       .catch(() => undefined)
+    void loadRelated(id, detail.category, requestId)
   } catch (err) {
     if (requestId !== loadRequestId) return
     error.value = err instanceof Error ? err.message : '加载公告详情失败'
@@ -256,14 +348,17 @@ watch(
           <div v-for="field in fields" :key="field.key" class="field">
             <dt class="field__label">{{ field.label }}</dt>
             <dd class="field__value">
-              {{ field.value }}
-              <span
-                class="field__badge"
-                :class="field.verified ? 'field__badge--ok' : 'field__badge--warn'"
-              >
-                {{ field.verified ? '已核验' : '待核验' }}
-                <span class="num">{{ scoreToPercent(field.confidence) }}%</span>
-              </span>
+              <template v-if="field.value">
+                {{ field.value }}
+                <span
+                  class="field__badge"
+                  :class="field.verified ? 'field__badge--ok' : 'field__badge--warn'"
+                >
+                  {{ field.verified ? '已核验' : '待核验' }}
+                  <span class="num">{{ scoreToPercent(field.confidence) }}%</span>
+                </span>
+              </template>
+              <span v-else class="field__empty">未提取到</span>
             </dd>
           </div>
         </dl>
@@ -271,7 +366,17 @@ watch(
       </section>
 
       <section v-if="checklist?.items.length" class="card">
-        <h2 class="card__title">申报准备清单</h2>
+        <div class="card__head">
+          <h2 class="card__title card__title--inline">申报准备清单</h2>
+          <div class="card__actions">
+            <button class="btn btn--ghost" type="button" @click="checklistOpen = true">
+              弹窗查看
+            </button>
+            <button class="btn btn--primary" type="button" @click="downloadChecklist">
+              下载清单
+            </button>
+          </div>
+        </div>
         <ol class="checklist">
           <li v-for="(item, index) in checklist.items" :key="index" class="checklist__item">
             <span class="checklist__index num">{{ index + 1 }}</span>
@@ -305,7 +410,69 @@ watch(
           </p>
         </article>
       </section>
+
+      <!-- 规范模块四（6）：底部相关公告 3-5 条。后端只有大类，所以是同分类近似 -->
+      <section v-if="related.length" class="related">
+        <h2 class="related__title">同分类公告</h2>
+        <p class="related__note">本类目下最近发布的其他公告，供横向对比申报条件与截止时间。</p>
+        <div class="related__list">
+          <ArticleCard
+            v-for="item in related"
+            :key="item.article_id"
+            :article-id="item.article_id"
+            :title="item.title"
+            :source="item.source"
+            :published-at="item.published_at"
+            :category="item.category"
+            :score="null"
+            :show-more="false"
+          />
+        </div>
+      </section>
     </template>
+
+    <!-- 规范模块四（7）：申报清单弹窗 -->
+    <div
+      v-if="checklistOpen && checklist"
+      class="modal"
+      role="dialog"
+      aria-modal="true"
+      aria-label="申报准备清单"
+      @click.self="checklistOpen = false"
+    >
+      <div class="modal__panel">
+        <header class="modal__head">
+          <h2 class="modal__title">申报准备清单</h2>
+          <button
+            class="modal__close"
+            type="button"
+            aria-label="关闭"
+            @click="checklistOpen = false"
+          >
+            ✕
+          </button>
+        </header>
+        <p class="modal__sub">{{ article?.title }}</p>
+        <ol class="checklist modal__body">
+          <li v-for="(item, index) in checklist.items" :key="index" class="checklist__item">
+            <span class="checklist__index num">{{ index + 1 }}</span>
+            <div class="checklist__body">
+              <p class="checklist__text">{{ item.text }}</p>
+              <p v-if="item.source_text" class="checklist__source">依据：{{ item.source_text }}</p>
+              <span class="checklist__basis" :class="`checklist__basis--${item.basis}`">
+                {{ item.basis === 'excerpt' ? '原文依据' : '建议步骤' }}
+              </span>
+            </div>
+          </li>
+        </ol>
+        <footer class="modal__foot">
+          <button class="btn btn--ghost" type="button" @click="checklistOpen = false">关闭</button>
+          <button class="btn btn--primary" type="button" @click="downloadChecklist">
+            下载清单
+          </button>
+        </footer>
+      </div>
+    </div>
   </section>
 </template>
 
@@ -436,6 +603,24 @@ watch(
   color: var(--color-text-muted);
 }
 
+.card__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.card__title--inline {
+  margin: 0;
+}
+
+.card__actions {
+  display: flex;
+  gap: var(--space-2);
+}
+
 .fields {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
@@ -481,6 +666,12 @@ watch(
 .field__badge--warn {
   background: var(--color-warning-bg);
   color: var(--color-warning);
+}
+
+/* 规范模块四（3）：要素缺失明确标「未提取到」，不留空让人以为页面坏了 */
+.field__empty {
+  color: var(--color-text-disabled);
+  font-style: normal;
 }
 
 .checklist {
@@ -598,5 +789,104 @@ watch(
 
 .body__empty {
   color: var(--color-text-muted);
+}
+
+/* ── 同分类公告 ───────────────────────────────── */
+.related {
+  margin-top: var(--space-8);
+}
+
+.related__title {
+  margin: 0 0 var(--space-1);
+  font-size: var(--font-size-h2);
+  line-height: var(--line-height-heading);
+  color: var(--color-text);
+}
+
+.related__note {
+  margin: 0 0 var(--space-4);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+}
+
+.related__list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: var(--space-3);
+}
+
+/* ── 申报清单弹窗（规范：弹窗圆角 8px） ─────────── */
+.modal {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-6);
+  background: rgb(0, 0, 0, 0.45);
+}
+
+.modal__panel {
+  display: flex;
+  flex-direction: column;
+  width: min(720px, 100%);
+  max-height: min(80vh, 720px);
+  border-radius: var(--radius-modal);
+  background: var(--color-bg);
+  box-shadow: var(--shadow-modal);
+}
+
+.modal__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-6) 0;
+}
+
+.modal__title {
+  margin: 0;
+  font-size: var(--font-size-h3);
+  color: var(--color-text);
+}
+
+.modal__close {
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: var(--radius-base);
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-h3);
+  line-height: 1;
+  cursor: pointer;
+  transition: background-color var(--duration-fast) var(--ease-out);
+}
+
+.modal__close:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-text);
+}
+
+.modal__sub {
+  margin: var(--space-2) 0 0;
+  padding: 0 var(--space-6);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+}
+
+.modal__body {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-4) var(--space-6);
+}
+
+.modal__foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-6) var(--space-4);
+  border-top: 1px solid var(--color-split);
 }
 </style>

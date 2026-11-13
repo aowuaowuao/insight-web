@@ -6,7 +6,11 @@
  * （共 X 条 / 用时 Y 毫秒）、每页条数 10/20/50 切换。
  *
  * 排序完全由后端决定（score = 0.7 标签 + 0.2 标题 + 0.1 正文），前端不再排序；
- * 时间范围与发布单位同样交给后端过滤（时间按真实时刻比较，混时区站点不会错位）。
+ * 时间范围与发布单位同样交给后端过滤。两处口径不同，别混：
+ * - 日期过滤按**卡片上显示的那一天**（站点墙钟 published_at 的日期前缀，后端 _DAY_EXPR）
+ * - 排序按**真实时刻** published_at_utc（混时区站点才不会按墙钟排错）
+ * - 日期筛选按**卡片显示的那一天**（站点墙钟日，后端 db._DAY_EXPR），与界面所见一致
+ * 细节见 src/api/search.ts 的说明与 news-insight/app/db.py 的 _DAY_EXPR / _TIME_EXPR。
  *
  * 两种模式：
  * - 有关键词：GET /v1/search（每类取 100 条，前端分页）
@@ -21,7 +25,7 @@ import ArticleCard from '@/components/ArticleCard.vue'
 import EmptyState from '@/components/EmptyState.vue'
 import SkeletonList from '@/components/SkeletonList.vue'
 import { searchArticles, type SearchPayload, type SearchSort } from '@/api/search'
-import { listArticles, type ArticleSort } from '@/api/articles'
+import { listArticles } from '@/api/articles'
 import { listSources, type SourceStat } from '@/api/sources'
 import { useLatestRequest } from '@/composables/useLatestRequest'
 import { CATEGORY_ORDER, categoryName } from '@/constants/categories'
@@ -87,7 +91,8 @@ const browseUndated = ref(0)
 const loading = ref(false)
 const error = ref('')
 const page = ref(1)
-const pageSize = ref(20)
+/** 规范模块三：默认每页 10 条，可切 10/20/50 */
+const pageSize = ref(10)
 /** 历史搜索（最多 10 条，规范模块五（1）） */
 const searchHistory = ref<string[]>(readJson<string[]>(STORAGE_KEYS.SEARCH_HISTORY, []))
 /** 本次检索耗时（毫秒），规范模块五（6）要求展示 */
@@ -103,11 +108,19 @@ const advOpen = ref(false)
 const timeRange = ref<TimeRange>('all')
 const customFrom = ref('')
 const customTo = ref('')
+/** 浏览模式只允许一个大类时的提示；有内容就显示在分类筛选下面 */
+const categoryHint = ref('')
 const sort = ref<SearchSort>('relevance')
 
 /** 上一次从 URL 应用过的状态签名，避免 watch 与 router.replace 互相触发死循环 */
 let appliedSignature = ''
 
+/**
+ * 浏览模式：无关键词且选中**一个**大类时，走 GET /v1/articles?category=（服务端分页）。
+ * 后端这个端点只接受单个大类，多选无法表达——所以此时必须在交互上收敛成一个，
+ * 否则「有关键词时多选生效、没关键词时多选静默失效」，而筛选摘要却显示两类。
+ * 收敛逻辑见 normalizeBrowseCategories()。
+ */
 const browseCategory = computed(() =>
   submitted.value === '' && selectedCategories.value.length === 1
     ? selectedCategories.value[0]
@@ -123,8 +136,13 @@ const rangeInvalid = computed(() => isRangeInverted(activeRange.value))
  * 浏览模式（/v1/articles）没有 relevance 排序：传进来会退化成最新发布，
  * 界面上的「相关度优先」在这种模式下也置灰，不给出无效选项。
  */
-const effectiveBrowseSort = computed<ArticleSort>(() =>
+const effectiveBrowseSort = computed<'published_desc' | 'published_asc'>(() =>
   sort.value === 'published_asc' ? 'published_asc' : 'published_desc',
+)
+
+/** 当前模式真正生效的排序：浏览模式没有 relevance，降级为最新发布，展示与实际必须一致 */
+const effectiveSort = computed<SearchSort>(() =>
+  browseCategory.value ? effectiveBrowseSort.value : sort.value,
 )
 
 const allSearchItems = computed<CardItem[]>(() => {
@@ -189,12 +207,16 @@ const activeFilterCount = computed(() => {
   if (timeRange.value !== 'all') count += 1
   count += selectedSources.value.length
   if (highRelevanceOnly.value) count += 1
-  if (sort.value !== 'relevance') count += 1
+  if (effectiveSort.value !== 'relevance') count += 1
   return count
 })
 
 const statusText = computed(() => {
   if (loading.value) return '正在检索…'
+  // 这两个都要先于「共 X 条」判断：否则状态行会用「上一次的条数」配「这一次的
+  // 条件」，读起来像「确实没数据」，与同页的错误卡片自相矛盾。
+  if (rangeInvalid.value) return '时间范围无效：开始日期不能晚于结束日期，请调整后再检索'
+  if (error.value) return '本次检索失败：' + error.value
   const filterPart = filterSummary.value ? '（' + filterSummary.value + '）' : ''
   if (submitted.value) {
     const matched = payload.value?.matched_tags ?? []
@@ -324,6 +346,10 @@ interface RouteState {
   to: string
   sort: SearchSort
   high: boolean
+  /** 页码（1 起）；只有服务端分页的浏览模式真正用它定位数据 */
+  page: number
+  /** 时间范围的语义（快捷项 / 自定义），与 from、to 一起还原才不会被「猜」成自定义 */
+  range: TimeRange
 }
 
 function signatureOf(state: RouteState): string {
@@ -340,7 +366,36 @@ function stateFromRoute(): RouteState {
   const sortRaw = route.query.sort
   const nextSort: SearchSort = isSearchSort(sortRaw) ? sortRaw : 'relevance'
   const high = route.query.high === '1'
-  return { q, cats, sources: srcs, from, to, sort: nextSort, high }
+  const pageRaw = typeof route.query.page === 'string' ? Number(route.query.page) : 1
+  const nextPage = Number.isInteger(pageRaw) && pageRaw >= 1 ? pageRaw : 1
+  return {
+    q,
+    cats,
+    sources: srcs,
+    from,
+    to,
+    sort: nextSort,
+    high,
+    page: nextPage,
+    range: rangeFromRoute(),
+  }
+}
+
+function isTimeRange(value: unknown): value is TimeRange {
+  return value === 'all' || value === '7d' || value === '30d' || value === 'custom'
+}
+
+/**
+ * 时间范围的还原规则：
+ * - URL 里有 range=7d/30d/custom 就用它（新链接能保住「近 7 天」是快捷项）
+ * - 只有 from/to 的老链接：一律按自定义还原，免得把用户手填的日期说成「近 7 天」
+ * - 什么都没有：全部时间
+ */
+function rangeFromRoute(): TimeRange {
+  const raw = route.query.range
+  if (isTimeRange(raw)) return raw
+  const hasDate = typeof route.query.from === 'string' || typeof route.query.to === 'string'
+  return hasDate ? 'custom' : 'all'
 }
 
 /** 由当前状态生成查询串（空值即删掉，保持 URL 干净可分享） */
@@ -353,6 +408,10 @@ function queryOf(state: RouteState): Record<string, string | string[] | undefine
     to: state.to === '' ? undefined : state.to,
     sort: state.sort === 'relevance' ? undefined : state.sort,
     high: state.high ? '1' : undefined,
+    // 第 1 页不写进 URL：保持链接干净，且「第 1 页」与「没翻过页」本来就是同一状态
+    page: state.page > 1 ? String(state.page) : undefined,
+    // 快捷项（近 7 天 / 近 30 天）要连同语义一起记，否则刷新后会被还原成「自定义」
+    range: state.range === 'all' || state.range === 'custom' ? undefined : state.range,
   }
 }
 
@@ -364,8 +423,12 @@ function currentState(): RouteState {
     sources: selectedSources.value,
     from: timeRange.value === 'all' ? '' : range.from,
     to: timeRange.value === 'all' ? '' : range.to,
-    sort: sort.value,
+    // 写进 URL 的是「实际生效的排序」：浏览模式下 relevance 会降级成最新发布，
+    // 若把用户点过的 relevance 写进去，刷新后 chip 又变回「相关度优先」而数据没变。
+    sort: effectiveSort.value,
     high: highRelevanceOnly.value,
+    page: page.value,
+    range: timeRange.value,
   }
 }
 
@@ -456,28 +519,50 @@ function applyFromRoute(): void {
   appliedSignature = signature
   keyword.value = state.q
   submitted.value = state.q
-  selectedCategories.value = state.cats
+  // 无关键词（浏览模式）时后端只按单个大类取数。手改/分享来的多值链接同样收敛，
+  // 否则会退化成「一个都不选」的空页面，而摘要还写着两个类。
+  selectedCategories.value = !state.q && state.cats.length > 1 ? [state.cats[0]] : state.cats
+  categoryHint.value =
+    !state.q && state.cats.length > 1
+      ? '浏览模式一次只看一个大类，已按「' +
+        categoryName(state.cats[0]) +
+        '」筛选；输入关键词后可多选大类检索。'
+      : ''
   selectedSources.value = state.sources
   sort.value = state.sort
   highRelevanceOnly.value = state.high
-  if (!state.from && !state.to) {
-    timeRange.value = 'all'
+  timeRange.value = state.range
+  if (state.range === 'all') {
     customFrom.value = ''
     customTo.value = ''
-  } else {
-    // URL 只带具体日期，不记「用户当初点的是近 7 天还是自定义」——那属于
-    // 交互偏好，不该进可分享链接；这里统一按自定义范围还原。
-    timeRange.value = 'custom'
+  } else if (state.range === 'custom') {
     customFrom.value = state.from
     customTo.value = state.to
+  } else {
+    // 快捷项：起止日期由 resolveRange 现算，留着旧的输入值只会在切到自定义时误导
+    customFrom.value = ''
+    customTo.value = ''
   }
-  page.value = 1
+  page.value = state.page
+  if (rangeInvalid.value) {
+    // 手改 URL 造出倒置区间：不发请求（后端会返回空集，用户会以为真没数据），
+    // 让状态行的「时间范围无效」提示接管。
+    latest.next()
+    loading.value = false
+    error.value = ''
+    payload.value = null
+    browseItems.value = []
+    browseTotal.value = 0
+    browseUndated.value = 0
+    return
+  }
   void run()
 }
 
 function submit(): void {
   const q = keyword.value.trim()
   submitted.value = q
+  categoryHint.value = ''
   page.value = 1
   syncAndRun()
 }
@@ -488,9 +573,20 @@ function searchHot(word: string): void {
 }
 
 function toggleCategory(id: string): void {
-  selectedCategories.value = selectedCategories.value.includes(id)
-    ? selectedCategories.value.filter((item) => item !== id)
-    : [...selectedCategories.value, id]
+  const current = selectedCategories.value
+  if (current.includes(id)) {
+    selectedCategories.value = current.filter((item) => item !== id)
+    categoryHint.value = ''
+  } else if (!submitted.value && current.length >= 1) {
+    // 浏览模式（无关键词）后端只按单个大类取数：多选要么无法表达、要么静默失效。
+    // 这里收敛成「以最后一次点选的为准」，并把替换关系明说，避免用户以为是多选。
+    selectedCategories.value = [id]
+    categoryHint.value =
+      '浏览模式一次只看一个大类，已按「' + categoryName(id) + '」筛选；输入关键词后可多选大类检索。'
+  } else {
+    selectedCategories.value = [...current, id]
+    categoryHint.value = ''
+  }
   page.value = 1
   syncAndRun()
 }
@@ -504,11 +600,16 @@ function toggleSource(id: string): void {
 }
 
 function setTimeRange(value: TimeRange): void {
+  const previous = timeRange.value
   timeRange.value = value
   page.value = 1
-  // 自定义范围在用户真正填完日期前不发请求——否则先发一次「不限时间」的
-  // 结果，再被日期覆盖，列表会闪一下。
-  if (value === 'custom' && !customFrom.value && !customTo.value) return
+  // 自定义范围在用户填完日期前不重复发请求：仍停在「自定义」且两个日期都空时，
+  // 请求参数没有任何变化，再发一次只会白白多一次往返。
+  //
+  // 但**必须**只在「真的没变化」时跳过：从「近 7 天」切到「自定义」时区间被清空，
+  // 请求口径变了（时间条件消失），此时不重新取数就会出现「页码显示第 1 页、
+  // 列表还是第 2 页数据」——用户看到的两份信息互相矛盾，比多一次请求糟得多。
+  if (value === 'custom' && !customFrom.value && !customTo.value && previous === value) return
   syncAndRun()
 }
 
@@ -539,12 +640,14 @@ function resetFilters(): void {
   customTo.value = ''
   sort.value = 'relevance'
   highRelevanceOnly.value = false
+  categoryHint.value = ''
   page.value = 1
   syncAndRun()
 }
 
 function clearCategory(): void {
   selectedCategories.value = []
+  categoryHint.value = ''
   page.value = 1
   syncAndRun()
 }
@@ -561,20 +664,34 @@ function clear(): void {
   browseTotal.value = 0
   browseUndated.value = 0
   error.value = ''
+  categoryHint.value = ''
   page.value = 1
   syncAndRun()
+}
+
+/** 只翻页不改筛选：写完 URL 再决定要不要重新取数（浏览模式是服务端分页） */
+function applyPaging(): void {
+  const state = currentState()
+  // 先记下签名，这样下面 router.replace 触发的 applyFromRoute 会认为状态已知、
+  // 不会再 run 一次（否则浏览模式每次翻页都发两次请求）
+  appliedSignature = signatureOf(state)
+  const nextQuery = queryOf(state)
+  if (JSON.stringify(route.query) !== JSON.stringify(nextQuery)) {
+    void router.replace({ query: nextQuery })
+  }
+  if (browseCategory.value) void run()
 }
 
 function changePage(next: number): void {
   page.value = next
   // 浏览模式是服务端分页，翻页要重新取；检索模式数据已在本地，只切页
-  if (browseCategory.value) void run()
+  applyPaging()
 }
 
 function changePageSize(size: number): void {
   pageSize.value = size
   page.value = 1
-  if (browseCategory.value) void run()
+  applyPaging()
 }
 
 watch(highRelevanceOnly, () => {
@@ -677,6 +794,7 @@ onMounted(() => {
         清除分类
       </button>
     </div>
+    <p v-if="categoryHint" class="cat-hint" role="status">{{ categoryHint }}</p>
 
     <div class="adv">
       <button
@@ -769,9 +887,9 @@ onMounted(() => {
             v-for="item in SORT_OPTIONS"
             :key="item.value"
             class="chip"
-            :class="{ 'chip--active': sort === item.value }"
+            :class="{ 'chip--active': effectiveSort === item.value }"
             type="button"
-            :aria-pressed="sort === item.value"
+            :aria-pressed="effectiveSort === item.value"
             :disabled="browseCategory !== '' && item.value === 'relevance'"
             @click="setSort(item.value)"
           >
@@ -885,6 +1003,16 @@ onMounted(() => {
 </template>
 
 <style scoped>
+.cat-hint {
+  margin: 0 0 var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-left: 3px solid var(--color-warning);
+  border-radius: var(--radius-base);
+  background: var(--color-warning-bg);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+}
+
 .search {
   max-width: var(--layout-max-width);
   margin: 0 auto;
