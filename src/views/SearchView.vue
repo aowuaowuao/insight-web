@@ -717,6 +717,8 @@ function clear(): void {
   browseUndated.value = 0
   error.value = ''
   categoryHint.value = ''
+  // high 依赖关键词，清空关键词后必须一并清掉；否则落到浏览模式会出现「勾选且禁用」的自相矛盾状态
+  highRelevanceOnly.value = false
   page.value = 1
   syncAndRun()
 }
@@ -1026,7 +1028,7 @@ onMounted(() => {
       description="也可以从分类筛选里选一个大类，浏览该类的全部文章。"
     />
 
-    <template v-else>
+    <template v-else-if="!rangeInvalid">
       <div v-if="cards.length" class="results">
         <ArticleCard
           v-for="card in cards"

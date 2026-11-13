@@ -236,3 +236,45 @@ describe('状态行统计口径（N12）', () => {
     expect(status).not.toContain('候选集')
   })
 })
+
+describe('清除与筛选状态（S16 / S17 回归）', () => {
+  it('清除关键词后 URL 不再残留 high=1，复选框也不会变成「勾选且禁用」（S16）', async () => {
+    const { wrapper, router } = await mountAt('/search?q=申报&high=1&category=project_application')
+    const boxBefore = wrapper.find<HTMLInputElement>('input[type="checkbox"]')
+    expect(boxBefore.element.checked).toBe(true)
+
+    const clearButton = buttonByText(wrapper, '清除')
+    expect(clearButton).toBeDefined()
+    await clearButton!.trigger('click')
+    await settle()
+
+    expect(router.currentRoute.value.query.high).toBeUndefined()
+    expect(router.currentRoute.value.query.q).toBeUndefined()
+    const boxAfter = wrapper.find<HTMLInputElement>('input[type="checkbox"]')
+    expect(boxAfter.element.checked).toBe(false)
+  })
+
+  it('时间区间倒置时不渲染分页器，避免「时间范围无效」下方再写「共 0 条」（S17）', async () => {
+    const { wrapper } = await mountAt('/search?q=申报&range=custom&from=2026-11-10&to=2026-11-01')
+
+    expect(wrapper.find('.status').text()).toContain('时间范围无效')
+    expect(wrapper.find('.pager').exists()).toBe(false)
+  })
+
+  it('浏览模式页码越界时回退末页并重取一次（N19）', async () => {
+    vi.mocked(listArticles).mockResolvedValue({
+      items: [makeItem('b1')],
+      total: 5,
+      limit: 10,
+      offset: 0,
+      sort: 'published_desc',
+      undatedExcluded: 0,
+    })
+
+    const { wrapper, router } = await mountAt('/search?category=other&page=99')
+
+    expect(vi.mocked(listArticles)).toHaveBeenCalledTimes(2)
+    expect(router.currentRoute.value.query.page).toBeUndefined()
+    expect(wrapper.find('.pager__summary').text()).toContain('第 1 / 1 页')
+  })
+})
