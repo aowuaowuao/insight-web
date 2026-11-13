@@ -1,16 +1,18 @@
 <script setup lang="ts">
 /**
  * 信息检索页。
- * 对照规范 2.2.1（二）模块五：搜索框、热门搜索、分类筛选、
- * 结果列表（相关度评分 + 关键词高亮）、分页（每页条数可切换）、空状态。
+ * 对照规范 2.2.1（二）模块五：搜索框与清除、历史搜索（≤10）、高级搜索面板、
+ * 结果列表（相关度高亮 + 评分）、搜索建议（≤8）、空状态与热词、搜索结果统计
+ * （共 X 条 / 用时 Y 毫秒）、每页条数 10/20/50 切换。
  *
  * 排序完全由后端决定（score = 0.7 标签 + 0.2 标题 + 0.1 正文），前端不再排序；
- * 分类筛选后仍按大类分组返回，这里按后端给的 groups 顺序展平，保持「类内相关度序」。
+ * 时间范围与发布单位同样交给后端过滤（时间按真实时刻比较，混时区站点不会错位）。
  *
  * 两种模式：
  * - 有关键词：GET /v1/search（每类取 100 条，前端分页）
  * - 无关键词且只选了一个大类：GET /v1/articles?category=（服务端分页，即「浏览该类全部文章」）
- * URL 上的 q 与 category 是唯一真相来源，刷新/分享能还原同一状态。
+ * URL 上的 q / category / source / from / to / sort / high 是唯一真相来源，
+ * 刷新、分享、浏览器前进后退都能还原同一状态。
  */
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -18,13 +20,16 @@ import AppPager from '@/components/AppPager.vue'
 import ArticleCard from '@/components/ArticleCard.vue'
 import EmptyState from '@/components/EmptyState.vue'
 import SkeletonList from '@/components/SkeletonList.vue'
-import { searchArticles, type SearchPayload } from '@/api/search'
-import { listArticles } from '@/api/articles'
+import { searchArticles, type SearchPayload, type SearchSort } from '@/api/search'
+import { listArticles, type ArticleSort } from '@/api/articles'
+import { listSources, type SourceStat } from '@/api/sources'
 import { useLatestRequest } from '@/composables/useLatestRequest'
 import { CATEGORY_ORDER, categoryName } from '@/constants/categories'
+import { sourceName } from '@/constants/sources'
 import { listTags, tagName, type TagDef } from '@/api/tags'
 import { readJson, writeJson } from '@/utils/storage'
 import { STORAGE_KEYS } from '@/utils/storageKeys'
+import { isRangeInverted, resolveRange, type TimeRange } from '@/utils/dateRange'
 
 interface CardItem {
   article_id: string
@@ -48,6 +53,21 @@ const HOT_KEYWORDS = [
   '科技成果转化',
 ]
 
+/** 时间范围快捷项；custom 才用下面两个日期输入框 */
+const TIME_RANGES: { value: TimeRange; label: string }[] = [
+  { value: 'all', label: '全部时间' },
+  { value: '7d', label: '近 7 天' },
+  { value: '30d', label: '近 30 天' },
+  { value: 'custom', label: '自定义' },
+]
+
+/** 类内排序；浏览模式没有相关度（列表接口不返回），会退回最新发布 */
+const SORT_OPTIONS: { value: SearchSort; label: string }[] = [
+  { value: 'relevance', label: '相关度优先' },
+  { value: 'published_desc', label: '最新发布' },
+  { value: 'published_asc', label: '最早发布' },
+]
+
 const route = useRoute()
 const router = useRouter()
 const latest = useLatestRequest()
@@ -57,9 +77,13 @@ const submitted = ref('')
 const selectedCategories = ref<string[]>([])
 /** 标签词表：后端只给标签 id，命中标签要渲染成中文名 */
 const tags = ref<TagDef[]>([])
+/** 发布单位（站点）候选：来自后端 /v1/sources，不再维护前端静态清单 */
+const sources = ref<SourceStat[]>([])
+const selectedSources = ref<string[]>([])
 const payload = ref<SearchPayload | null>(null)
 const browseItems = ref<CardItem[]>([])
 const browseTotal = ref(0)
+const browseUndated = ref(0)
 const loading = ref(false)
 const error = ref('')
 const page = ref(1)
@@ -73,14 +97,34 @@ const highRelevanceOnly = ref(false)
 const suggestOpen = ref(false)
 /** 键盘高亮的下标，-1 表示没有选中建议 */
 const suggestIndex = ref(-1)
+/** 高级搜索面板展开状态（默认收起，规范要求「展开高级搜索面板」） */
+const advOpen = ref(false)
 
-/** 上一次从 URL 应用过的状态，避免 watch 与 router.replace 互相触发死循环 */
-let applied = { q: '', cats: [] as string[] }
+const timeRange = ref<TimeRange>('all')
+const customFrom = ref('')
+const customTo = ref('')
+const sort = ref<SearchSort>('relevance')
+
+/** 上一次从 URL 应用过的状态签名，避免 watch 与 router.replace 互相触发死循环 */
+let appliedSignature = ''
 
 const browseCategory = computed(() =>
   submitted.value === '' && selectedCategories.value.length === 1
     ? selectedCategories.value[0]
     : '',
+)
+
+/** 当前生效的时间区间（YYYY-MM-DD，空串表示不限） */
+const activeRange = computed(() => resolveRange(timeRange.value, customFrom.value, customTo.value))
+/** 自定义范围起止颠倒：不拦的话后端按 [from, to) 返回空集，用户以为是没数据 */
+const rangeInvalid = computed(() => isRangeInverted(activeRange.value))
+
+/**
+ * 浏览模式（/v1/articles）没有 relevance 排序：传进来会退化成最新发布，
+ * 界面上的「相关度优先」在这种模式下也置灰，不给出无效选项。
+ */
+const effectiveBrowseSort = computed<ArticleSort>(() =>
+  sort.value === 'published_asc' ? 'published_asc' : 'published_desc',
 )
 
 const allSearchItems = computed<CardItem[]>(() => {
@@ -121,22 +165,74 @@ const loadedCount = computed(() =>
 )
 const totalPages = computed(() => Math.max(1, Math.ceil(loadedCount.value / pageSize.value)))
 
+/** 已生效的筛选条件摘要，拼在状态行里，用户一眼能看出为什么条数变少了 */
+const filterSummary = computed(() => {
+  const parts: string[] = []
+  if (timeRange.value !== 'all') {
+    const range = activeRange.value
+    if (range.from && range.to) parts.push('时间 ' + range.from + ' 至 ' + range.to)
+    else if (range.from) parts.push('时间 ' + range.from + ' 起')
+    else if (range.to) parts.push('时间截至 ' + range.to)
+  }
+  if (selectedSources.value.length) {
+    parts.push('发布单位 ' + selectedSources.value.map((id) => sourceName(id)).join('、'))
+  }
+  if (selectedCategories.value.length) {
+    parts.push('分类 ' + selectedCategories.value.map(categoryName).join('、'))
+  }
+  return parts.join('，')
+})
+
+/** 处于非默认状态的筛选项个数，用于折叠态上的角标 */
+const activeFilterCount = computed(() => {
+  let count = selectedCategories.value.length
+  if (timeRange.value !== 'all') count += 1
+  count += selectedSources.value.length
+  if (highRelevanceOnly.value) count += 1
+  if (sort.value !== 'relevance') count += 1
+  return count
+})
+
 const statusText = computed(() => {
   if (loading.value) return '正在检索…'
+  const filterPart = filterSummary.value ? '（' + filterSummary.value + '）' : ''
   if (submitted.value) {
     const matched = payload.value?.matched_tags ?? []
     const tagPart = matched.length
-      ? `，命中标签：${matched.map((id) => tagName(tags.value, id)).join('、')}`
+      ? '，命中标签：' + matched.map((id) => tagName(tags.value, id)).join('、')
       : ''
-    if (!totalCount.value) return `没有找到与「${submitted.value}」相关的公告${tagPart}`
+    if (!totalCount.value) {
+      return '没有找到与「' + submitted.value + '」相关的公告' + filterPart + tagPart
+    }
     const partial =
-      loadedCount.value < totalCount.value ? `，当前展示前 ${loadedCount.value} 条` : ''
-    const cost = elapsedMs.value === null ? '' : `，用时 ${elapsedMs.value} 毫秒`
+      loadedCount.value < totalCount.value ? '，当前展示前 ' + loadedCount.value + ' 条' : ''
+    const cost = elapsedMs.value === null ? '' : '，用时 ' + elapsedMs.value + ' 毫秒'
     const high = highRelevanceOnly.value ? '，已按相关度 ≥ 80% 过滤当前结果' : ''
-    return `关键词「${submitted.value}」共命中 ${totalCount.value} 条${partial}${tagPart}${cost}${high}`
+    return (
+      '关键词「' +
+      submitted.value +
+      '」共找到 ' +
+      totalCount.value +
+      ' 条结果' +
+      filterPart +
+      partial +
+      tagPart +
+      cost +
+      high
+    )
   }
   if (browseCategory.value) {
-    return `「${categoryName(browseCategory.value)}」共 ${browseTotal.value} 篇文章`
+    const undated =
+      browseUndated.value > 0 ? '（另有 ' + browseUndated.value + ' 篇无发布时间未计入）' : ''
+    return (
+      '「' +
+      categoryName(browseCategory.value) +
+      '」共 ' +
+      browseTotal.value +
+      ' 篇文章' +
+      filterPart +
+      undated
+    )
   }
   return '输入关键词开始检索，或从左侧选一个大类浏览该类全部文章。'
 })
@@ -209,13 +305,79 @@ watch(suggestions, () => {
   suggestIndex.value = -1
 })
 
-function normalizeCategories(value: unknown): string[] {
+function normalizeList(value: unknown): string[] {
   const list = Array.isArray(value) ? value : value === undefined || value === null ? [] : [value]
   return list.filter((item): item is string => typeof item === 'string' && item !== '')
 }
 
-function sameCategories(left: string[], right: string[]): boolean {
-  return left.length === right.length && left.every((item, index) => item === right[index])
+const normalizeCategories = normalizeList
+
+function isSearchSort(value: unknown): value is SearchSort {
+  return value === 'relevance' || value === 'published_desc' || value === 'published_asc'
+}
+
+interface RouteState {
+  q: string
+  cats: string[]
+  sources: string[]
+  from: string
+  to: string
+  sort: SearchSort
+  high: boolean
+}
+
+function signatureOf(state: RouteState): string {
+  return JSON.stringify(state)
+}
+
+/** 从 URL 解析筛选状态；非法值一律退回默认，不抛错（URL 可能是手改的） */
+function stateFromRoute(): RouteState {
+  const q = typeof route.query.q === 'string' ? route.query.q.trim() : ''
+  const cats = normalizeCategories(route.query.category)
+  const srcs = normalizeList(route.query.source)
+  const from = typeof route.query.from === 'string' ? route.query.from.trim() : ''
+  const to = typeof route.query.to === 'string' ? route.query.to.trim() : ''
+  const sortRaw = route.query.sort
+  const nextSort: SearchSort = isSearchSort(sortRaw) ? sortRaw : 'relevance'
+  const high = route.query.high === '1'
+  return { q, cats, sources: srcs, from, to, sort: nextSort, high }
+}
+
+/** 由当前状态生成查询串（空值即删掉，保持 URL 干净可分享） */
+function queryOf(state: RouteState): Record<string, string | string[] | undefined> {
+  return {
+    q: state.q === '' ? undefined : state.q,
+    category: state.cats.length ? state.cats : undefined,
+    source: state.sources.length ? state.sources : undefined,
+    from: state.from === '' ? undefined : state.from,
+    to: state.to === '' ? undefined : state.to,
+    sort: state.sort === 'relevance' ? undefined : state.sort,
+    high: state.high ? '1' : undefined,
+  }
+}
+
+function currentState(): RouteState {
+  const range = activeRange.value
+  return {
+    q: submitted.value,
+    cats: selectedCategories.value,
+    sources: selectedSources.value,
+    from: timeRange.value === 'all' ? '' : range.from,
+    to: timeRange.value === 'all' ? '' : range.to,
+    sort: sort.value,
+    high: highRelevanceOnly.value,
+  }
+}
+
+/** 状态变化后统一走这里：先同步 URL，再发请求（两者用同一个签名去重） */
+function syncAndRun(): void {
+  const state = currentState()
+  appliedSignature = signatureOf(state)
+  const nextQuery = queryOf(state)
+  if (JSON.stringify(route.query) !== JSON.stringify(nextQuery)) {
+    void router.replace({ query: nextQuery })
+  }
+  void run()
 }
 
 async function run(): Promise<void> {
@@ -223,11 +385,16 @@ async function run(): Promise<void> {
   loading.value = true
   error.value = ''
   try {
+    const range = timeRange.value === 'all' ? { from: '', to: '' } : activeRange.value
     if (submitted.value) {
       const startedAt = performance.now()
       const result = await searchArticles(submitted.value, {
         perCategory: 100,
         categories: selectedCategories.value,
+        sources: selectedSources.value,
+        publishedFrom: range.from || undefined,
+        publishedTo: range.to || undefined,
+        sort: sort.value,
       })
       if (!latest.isCurrent(requestId)) return
       payload.value = result
@@ -235,9 +402,14 @@ async function run(): Promise<void> {
       rememberSearch(submitted.value)
       browseItems.value = []
       browseTotal.value = 0
+      browseUndated.value = 0
     } else if (browseCategory.value) {
       const result = await listArticles({
         category: browseCategory.value,
+        sources: selectedSources.value,
+        publishedFrom: range.from || undefined,
+        publishedTo: range.to || undefined,
+        sort: effectiveBrowseSort.value,
         limit: pageSize.value,
         offset: (page.value - 1) * pageSize.value,
       })
@@ -253,12 +425,15 @@ async function run(): Promise<void> {
         matchedTerms: [],
       }))
       browseTotal.value = result.total
+      browseUndated.value = result.undatedExcluded
       payload.value = null
+      elapsedMs.value = null
     } else {
       payload.value = null
       elapsedMs.value = null
       browseItems.value = []
       browseTotal.value = 0
+      browseUndated.value = 0
     }
   } catch (err) {
     if (!latest.isCurrent(requestId)) return
@@ -268,15 +443,34 @@ async function run(): Promise<void> {
   }
 }
 
-/** 把 URL 上的 q / category 应用到组件状态；状态没变就不重复请求 */
+/**
+ * 把 URL 上的状态应用到组件；签名没变就不重复请求。
+ *
+ * 用「整串签名」而不是逐个字段比对：新增筛选项时忘记同步比对条件就会变成
+ * 「改了筛选但页面不动」或「watch 与 replace 互相触发」，签名写法不会漏。
+ */
 function applyFromRoute(): void {
-  const q = typeof route.query.q === 'string' ? route.query.q.trim() : ''
-  const cats = normalizeCategories(route.query.category)
-  if (q === applied.q && sameCategories(cats, applied.cats)) return
-  applied = { q, cats }
-  keyword.value = q
-  submitted.value = q
-  selectedCategories.value = cats
+  const state = stateFromRoute()
+  const signature = signatureOf(state)
+  if (signature === appliedSignature) return
+  appliedSignature = signature
+  keyword.value = state.q
+  submitted.value = state.q
+  selectedCategories.value = state.cats
+  selectedSources.value = state.sources
+  sort.value = state.sort
+  highRelevanceOnly.value = state.high
+  if (!state.from && !state.to) {
+    timeRange.value = 'all'
+    customFrom.value = ''
+    customTo.value = ''
+  } else {
+    // URL 只带具体日期，不记「用户当初点的是近 7 天还是自定义」——那属于
+    // 交互偏好，不该进可分享链接；这里统一按自定义范围还原。
+    timeRange.value = 'custom'
+    customFrom.value = state.from
+    customTo.value = state.to
+  }
   page.value = 1
   void run()
 }
@@ -285,11 +479,7 @@ function submit(): void {
   const q = keyword.value.trim()
   submitted.value = q
   page.value = 1
-  applied = { q, cats: selectedCategories.value }
-  void router.replace({
-    query: { ...route.query, q: q === '' ? undefined : q },
-  })
-  void run()
+  syncAndRun()
 }
 
 function searchHot(word: string): void {
@@ -298,22 +488,65 @@ function searchHot(word: string): void {
 }
 
 function toggleCategory(id: string): void {
-  const next = selectedCategories.value.includes(id)
+  selectedCategories.value = selectedCategories.value.includes(id)
     ? selectedCategories.value.filter((item) => item !== id)
     : [...selectedCategories.value, id]
   page.value = 1
-  applied = { q: submitted.value, cats: next }
-  void router.replace({
-    query: { ...route.query, category: next.length ? next : undefined },
-  })
-  void run()
+  syncAndRun()
+}
+
+function toggleSource(id: string): void {
+  selectedSources.value = selectedSources.value.includes(id)
+    ? selectedSources.value.filter((item) => item !== id)
+    : [...selectedSources.value, id]
+  page.value = 1
+  syncAndRun()
+}
+
+function setTimeRange(value: TimeRange): void {
+  timeRange.value = value
+  page.value = 1
+  // 自定义范围在用户真正填完日期前不发请求——否则先发一次「不限时间」的
+  // 结果，再被日期覆盖，列表会闪一下。
+  if (value === 'custom' && !customFrom.value && !customTo.value) return
+  syncAndRun()
+}
+
+function onCustomDateChange(): void {
+  if (timeRange.value !== 'custom') timeRange.value = 'custom'
+  page.value = 1
+  if (rangeInvalid.value) return
+  syncAndRun()
+}
+
+function setSort(value: SearchSort): void {
+  sort.value = value
+  page.value = 1
+  syncAndRun()
+}
+
+function onHighChange(): void {
+  page.value = 1
+  syncAndRun()
+}
+
+/** 重置全部筛选（关键词保留，用户通常只是想清筛选条件） */
+function resetFilters(): void {
+  selectedCategories.value = []
+  selectedSources.value = []
+  timeRange.value = 'all'
+  customFrom.value = ''
+  customTo.value = ''
+  sort.value = 'relevance'
+  highRelevanceOnly.value = false
+  page.value = 1
+  syncAndRun()
 }
 
 function clearCategory(): void {
+  selectedCategories.value = []
   page.value = 1
-  applied = { q: submitted.value, cats: [] }
-  void router.replace({ query: { ...route.query, category: undefined } })
-  void run()
+  syncAndRun()
 }
 
 /** 清空关键词：同时作废在飞请求，避免旧结果回填到已清空的页面 */
@@ -326,15 +559,15 @@ function clear(): void {
   elapsedMs.value = null
   browseItems.value = []
   browseTotal.value = 0
+  browseUndated.value = 0
   error.value = ''
   page.value = 1
-  applied = { q: '', cats: selectedCategories.value }
-  void router.replace({ query: { ...route.query, q: undefined } })
-  if (browseCategory.value) void run()
+  syncAndRun()
 }
 
 function changePage(next: number): void {
   page.value = next
+  // 浏览模式是服务端分页，翻页要重新取；检索模式数据已在本地，只切页
   if (browseCategory.value) void run()
 }
 
@@ -349,12 +582,19 @@ watch(highRelevanceOnly, () => {
 })
 
 watch(() => route.fullPath, applyFromRoute)
+
 onMounted(() => {
   void applyFromRoute()
   // 词表加载失败不影响检索，命中标签会退回显示标签 id
   void listTags()
     .then((list) => {
       tags.value = list
+    })
+    .catch(() => undefined)
+  // 发布单位来自后端统计；失败就不展示这一组筛选，不阻塞检索本身
+  void listSources()
+    .then((list) => {
+      sources.value = list
     })
     .catch(() => undefined)
 })
@@ -412,8 +652,150 @@ onMounted(() => {
         </ul>
       </div>
       <button class="btn btn--primary" type="submit" :disabled="loading">检索</button>
-      <button v-if="submitted" class="btn btn--ghost" type="button" @click="clear">清空</button>
+      <button v-if="submitted" class="btn btn--ghost" type="button" @click="clear">清除</button>
     </form>
+
+    <div class="filters">
+      <span class="filters__label">分类筛选</span>
+      <button
+        v-for="id in CATEGORY_ORDER"
+        :key="id"
+        class="chip"
+        :class="{ 'chip--active': selectedCategories.includes(id) }"
+        type="button"
+        :aria-pressed="selectedCategories.includes(id)"
+        @click="toggleCategory(id)"
+      >
+        {{ categoryName(id) }}
+      </button>
+      <button
+        v-if="selectedCategories.length"
+        class="btn btn--text"
+        type="button"
+        @click="clearCategory"
+      >
+        清除分类
+      </button>
+    </div>
+
+    <div class="adv">
+      <button
+        class="adv__toggle"
+        type="button"
+        :aria-expanded="advOpen"
+        aria-controls="adv-panel"
+        @click="advOpen = !advOpen"
+      >
+        <svg class="adv__chevron" viewBox="0 0 16 16" aria-hidden="true">
+          <path
+            d="M4 6l4 4 4-4"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.6"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+        </svg>
+        高级搜索
+        <span v-if="activeFilterCount" class="adv__count">{{ activeFilterCount }}</span>
+      </button>
+      <span v-if="filterSummary" class="adv__summary">{{ filterSummary }}</span>
+      <button v-if="activeFilterCount" class="btn btn--text" type="button" @click="resetFilters">
+        重置筛选
+      </button>
+    </div>
+
+    <div v-show="advOpen" id="adv-panel" class="adv-panel">
+      <div class="adv-row">
+        <span class="adv-row__label">时间范围</span>
+        <div class="adv-row__body">
+          <button
+            v-for="item in TIME_RANGES"
+            :key="item.value"
+            class="chip"
+            :class="{ 'chip--active': timeRange === item.value }"
+            type="button"
+            :aria-pressed="timeRange === item.value"
+            @click="setTimeRange(item.value)"
+          >
+            {{ item.label }}
+          </button>
+          <template v-if="timeRange === 'custom'">
+            <input
+              v-model="customFrom"
+              class="adv-date"
+              type="date"
+              aria-label="开始日期"
+              @change="onCustomDateChange"
+            />
+            <span class="adv-row__sep">至</span>
+            <input
+              v-model="customTo"
+              class="adv-date"
+              type="date"
+              aria-label="结束日期"
+              @change="onCustomDateChange"
+            />
+          </template>
+        </div>
+      </div>
+      <p v-if="timeRange === 'custom' && rangeInvalid" class="adv-error" role="alert">
+        开始日期不能晚于结束日期，请调整后重试。
+      </p>
+
+      <div class="adv-row">
+        <span class="adv-row__label">发布单位</span>
+        <div class="adv-row__body">
+          <button
+            v-for="item in sources"
+            :key="item.source"
+            class="chip"
+            :class="{ 'chip--active': selectedSources.includes(item.source) }"
+            type="button"
+            :aria-pressed="selectedSources.includes(item.source)"
+            @click="toggleSource(item.source)"
+          >
+            {{ sourceName(item.source) }}
+            <span class="chip__count">{{ item.count }}</span>
+          </button>
+          <span v-if="!sources.length" class="adv-hint">暂无可选来源</span>
+        </div>
+      </div>
+
+      <div class="adv-row">
+        <span class="adv-row__label">排序方式</span>
+        <div class="adv-row__body">
+          <button
+            v-for="item in SORT_OPTIONS"
+            :key="item.value"
+            class="chip"
+            :class="{ 'chip--active': sort === item.value }"
+            type="button"
+            :aria-pressed="sort === item.value"
+            :disabled="browseCategory !== '' && item.value === 'relevance'"
+            @click="setSort(item.value)"
+          >
+            {{ item.label }}
+          </button>
+        </div>
+      </div>
+
+      <div class="adv-row">
+        <span class="adv-row__label">相关度</span>
+        <div class="adv-row__body">
+          <label class="check">
+            <input
+              v-model="highRelevanceOnly"
+              type="checkbox"
+              :disabled="!submitted"
+              @change="onHighChange"
+            />
+            仅看高相关度（≥80 分）
+          </label>
+          <span v-if="!submitted" class="adv-hint">输入关键词后可用</span>
+        </div>
+      </div>
+    </div>
 
     <div v-if="searchHistory.length" class="history">
       <span class="history__label">历史搜索</span>
@@ -442,33 +824,6 @@ onMounted(() => {
       </button>
     </div>
 
-    <div class="filters">
-      <span class="filters__label">分类筛选</span>
-      <button
-        v-for="id in CATEGORY_ORDER"
-        :key="id"
-        class="chip"
-        :class="{ 'chip--active': selectedCategories.includes(id) }"
-        type="button"
-        :aria-pressed="selectedCategories.includes(id)"
-        @click="toggleCategory(id)"
-      >
-        {{ categoryName(id) }}
-      </button>
-      <button
-        v-if="selectedCategories.length"
-        class="btn btn--text"
-        type="button"
-        @click="clearCategory"
-      >
-        清除筛选
-      </button>
-      <label class="check">
-        <input v-model="highRelevanceOnly" type="checkbox" :disabled="!submitted" />
-        仅看高相关度（≥80%）
-      </label>
-    </div>
-
     <p class="status" role="status">{{ statusText }}</p>
 
     <SkeletonList v-if="loading" :rows="5" />
@@ -483,8 +838,16 @@ onMounted(() => {
       v-else-if="(submitted || browseCategory) && !cards.length"
       variant="no-result"
       title="没有找到相关公告"
-      :description="`换个关键词试试，或去掉「${selectedCategories.map(categoryName).join('、') || '分类'}」筛选。`"
-    />
+      :description="`换个关键词试试，或点「重置筛选」去掉当前条件${
+        filterSummary ? '（' + filterSummary + '）' : ''
+      }。`"
+    >
+      <template #action>
+        <button v-if="activeFilterCount" class="btn btn--ghost" type="button" @click="resetFilters">
+          重置筛选
+        </button>
+      </template>
+    </EmptyState>
 
     <EmptyState
       v-else-if="!submitted && !browseCategory"
@@ -607,6 +970,120 @@ onMounted(() => {
   color: var(--color-primary);
 }
 
+.adv {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+.adv__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 0;
+  border: none;
+  background: none;
+  font-family: inherit;
+  font-size: var(--font-size-sm);
+  color: var(--color-primary);
+  cursor: pointer;
+}
+
+.adv__chevron {
+  width: 14px;
+  height: 14px;
+  transition: transform var(--duration-base) var(--ease-out);
+}
+
+.adv__toggle[aria-expanded='true'] .adv__chevron {
+  transform: rotate(180deg);
+}
+
+.adv__count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: var(--radius-pill);
+  background: var(--color-primary);
+  color: var(--color-text-inverse);
+  font-size: var(--font-size-xs);
+  line-height: 1;
+}
+
+.adv__summary {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+}
+
+.adv-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-split);
+  border-radius: var(--radius-card);
+  background: var(--color-bg-subtle, var(--color-split));
+}
+
+.adv-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.adv-row__label {
+  width: 64px;
+  flex: none;
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+}
+
+.adv-row__body {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.adv-row__sep {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+}
+
+.adv-date {
+  height: 28px;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-base);
+  font-family: inherit;
+  font-size: var(--font-size-xs);
+  color: var(--color-text);
+  background: var(--color-bg);
+}
+
+.adv-hint {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-disabled);
+}
+
+.adv-error {
+  margin: 0;
+  font-size: var(--font-size-xs);
+  color: var(--color-error);
+}
+
+.chip__count {
+  margin-left: 4px;
+  color: var(--color-text-muted);
+}
+
 .history {
   display: flex;
   flex-wrap: wrap;
@@ -668,7 +1145,7 @@ onMounted(() => {
     background-color var(--duration-fast) var(--ease-out);
 }
 
-.chip:hover {
+.chip:hover:not(:disabled) {
   border-color: var(--color-primary-hover);
   color: var(--color-primary);
 }
@@ -677,6 +1154,12 @@ onMounted(() => {
   border-color: var(--color-primary);
   background: var(--color-primary-bg);
   color: var(--color-primary);
+}
+
+.chip:disabled {
+  color: var(--color-text-disabled);
+  border-color: var(--color-split);
+  cursor: not-allowed;
 }
 
 .status {

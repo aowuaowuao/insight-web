@@ -21,17 +21,29 @@ export interface ArticleListItem {
   tags: ListTag[]
 }
 
+/** 列表排序键；后端只接受这四个值 */
+export type ArticleSort = 'published_desc' | 'published_asc' | 'confidence_desc' | 'confidence_asc'
+
 export interface ArticleListPage {
   items: ArticleListItem[]
   total: number
   limit: number
   offset: number
+  sort: ArticleSort
+  /** 两个时间列都为空、无法判断是否落在时间区间内的行数（被排除） */
+  undatedExcluded: number
 }
 
 /** 后端这个端点的 meta 恒存在（app/main.py 显式返回），不做可选兜底以免掩盖契约漂移 */
 interface ArticleListEnvelope {
   data: ArticleListItem[]
-  meta: { total: number; limit: number; offset: number }
+  meta: {
+    total: number
+    limit: number
+    offset: number
+    sort: ArticleSort
+    undated_excluded: number
+  }
 }
 
 export interface ArticleListOptions {
@@ -39,18 +51,37 @@ export interface ArticleListOptions {
   category?: string
   /** 二级标签 id */
   tag?: string
+  /** 只在这些来源（站点）里筛选 */
+  sources?: string[]
+  /** 发布日期下限 YYYY-MM-DD（含当天） */
+  publishedFrom?: string
+  /** 发布日期上限 YYYY-MM-DD（含当天） */
+  publishedTo?: string
+  /** 排序键，默认 published_desc */
+  sort?: ArticleSort
   limit?: number
   offset?: number
 }
 
-/** GET /v1/articles —— 分页列出已分析文章，可按大类 / 标签过滤 */
+/** GET /v1/articles —— 分页列出已分析文章，可按大类 / 标签 / 来源 / 时间过滤并排序 */
 export async function listArticles(options: ArticleListOptions = {}): Promise<ArticleListPage> {
   const params = new URLSearchParams()
   if (options.category) params.set('category', options.category)
   if (options.tag) params.set('tag', options.tag)
+  if (options.sort) params.set('sort', options.sort)
+  if (options.publishedFrom) params.set('published_from', options.publishedFrom)
+  if (options.publishedTo) params.set('published_to', options.publishedTo)
+  for (const source of options.sources ?? []) params.append('source', source)
   params.set('limit', String(options.limit ?? 20))
   params.set('offset', String(options.offset ?? 0))
 
   const res = await http.get<ArticleListEnvelope>(`/v1/articles?${params.toString()}`)
-  return { items: res.data, total: res.meta.total, limit: res.meta.limit, offset: res.meta.offset }
+  return {
+    items: res.data,
+    total: res.meta.total,
+    limit: res.meta.limit,
+    offset: res.meta.offset,
+    sort: res.meta.sort,
+    undatedExcluded: res.meta.undated_excluded,
+  }
 }

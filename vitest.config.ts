@@ -28,7 +28,7 @@ export default defineConfig({
       include: [
         'src/utils/**/*.ts',
         'src/stores/**/*.ts',
-        'src/api/http.ts',
+        'src/api/**/*.ts',
         'src/components/**/*.vue',
       ],
       exclude: ['src/**/*.d.ts'],

@@ -20,6 +20,11 @@ interface TagsResponse {
 
 let cache: TagDef[] | null = null
 
+/** 清空词表缓存。词表在运行期不变，仅测试需要重置。 */
+export function resetTagCache(): void {
+  cache = null
+}
+
 export async function listTags(): Promise<TagDef[]> {
   if (cache) return cache
   const res = await http.get<TagsResponse>('/v1/tags')
