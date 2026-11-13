@@ -12,8 +12,16 @@ export interface SearchRelevance {
 
 export interface SearchItem {
   article_id: string
+  /** 来源标识，如 prov-sci-tech */
+  source: string
+  /** 原文链接 */
+  url: string
   title: string
   published_at: string | null
+  published_at_utc: string | null
+  content_length: number
+  category: string | null
+  category_confidence: number | null
   tags: string[]
   relevance: SearchRelevance
   /** include_body=true 时才有 */

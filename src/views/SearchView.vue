@@ -5,11 +5,15 @@
  * - 一页 20 条
  */
 import { computed, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { searchArticles, type SearchItem, type SearchPayload } from '@/api/search'
 import { categoryName } from '@/constants/categories'
+import { sourceName } from '@/constants/sources'
 
 /** 每页条数（需求：一页 20 条） */
 const PAGE_SIZE = 20
+
+const router = useRouter()
 
 interface FlatItem extends SearchItem {
   category: string
@@ -98,6 +102,11 @@ function formatDate(value: string | null): string {
   if (!value) return '暂无日期'
   return value.replace('T', ' ').slice(0, 10)
 }
+
+/** 单击结果 -> 文章详情页 */
+function openArticle(articleId: string): void {
+  router.push({ name: 'article', params: { id: articleId } })
+}
 </script>
 
 <template>
@@ -160,9 +169,18 @@ function formatDate(value: string | null): string {
         </p>
 
         <ul v-if="pagedItems.length" class="result-list">
-          <li v-for="item in pagedItems" :key="item.article_id" class="result">
+          <li
+            v-for="item in pagedItems"
+            :key="item.article_id"
+            class="result"
+            role="button"
+            tabindex="0"
+            @click="openArticle(item.article_id)"
+            @keydown.enter="openArticle(item.article_id)"
+          >
             <div class="result__head">
               <span class="result__tag">{{ item.categoryLabel }}</span>
+              <span class="result__source">来源：{{ sourceName(item.source) }}</span>
               <span class="result__date">{{ formatDate(item.published_at) }}</span>
               <span class="result__score" :title="`相关度 ${item.relevance.score}`">
                 相关度 {{ (item.relevance.score * 100).toFixed(0) }}%
@@ -172,6 +190,7 @@ function formatDate(value: string | null): string {
             <p v-if="item.relevance.matched_terms.length" class="result__terms">
               命中：{{ item.relevance.matched_terms.join(' / ') }}
             </p>
+            <span class="result__more">查看详情 →</span>
           </li>
         </ul>
 
@@ -386,14 +405,45 @@ function formatDate(value: string | null): string {
 }
 
 .result {
-  padding: 1.05rem 1.3rem;
+  position: relative;
+  padding: 1.05rem 1.3rem 1.6rem;
   border: 1px solid var(--border);
   border-radius: 12px;
-  transition: border-color 0.18s ease;
+  cursor: pointer;
+  transition:
+    border-color 0.18s ease,
+    transform 0.18s ease,
+    box-shadow 0.18s ease;
 }
 
-.result:hover {
-  border-color: rgba(59, 130, 246, 0.4);
+.result:hover,
+.result:focus-visible {
+  border-color: rgba(59, 130, 246, 0.45);
+  transform: translateY(-2px);
+  box-shadow: 0 8px 22px rgba(59, 130, 246, 0.08);
+  outline: none;
+}
+
+.result__source {
+  color: #3b82f6;
+  opacity: 0.85;
+}
+
+.result__more {
+  position: absolute;
+  right: 1.3rem;
+  bottom: 0.75rem;
+  color: #3b82f6;
+  font-size: 0.8rem;
+  opacity: 0;
+  transform: translateX(-4px);
+  transition: all 0.18s ease;
+}
+
+.result:hover .result__more,
+.result:focus-visible .result__more {
+  opacity: 1;
+  transform: translateX(0);
 }
 
 .result__head {

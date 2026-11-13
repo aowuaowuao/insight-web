@@ -29,6 +29,12 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '信息检索' },
   },
   {
+    path: '/article/:id',
+    name: 'article',
+    component: () => import('@/views/ArticleView.vue'),
+    meta: { title: '文章详情' },
+  },
+  {
     // 404 兜底，必须放最后
     path: '/:pathMatch(.*)*',
     name: 'not-found',

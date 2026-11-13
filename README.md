@@ -40,7 +40,8 @@ npm run dev      # 启动开发服务器 http://localhost:5173
 | `/login` | 登录 | 用户名 / 密码表单 | 否（公开） |
 | `/` | 首页 | 仅一句「欢迎进入智能申报信息检索平台」 | 是 |
 | `/category` | 分类浏览 | 一句说明 + 预留分类区 | 是 |
-| `/search` | 信息检索 | 标题「智能信息检索」+ 搜索框 + 热门词 + 结果列表（**真实调用后端 `/v1/search`**，20 条/页） | 是 |
+| `/search` | 信息检索 | 标题「智能信息检索」+ 搜索框 + 热门词 + 结果列表（**真实调用后端 `/v1/search`**，20 条/页，显示来源） | 是 |
+| `/article/:id` | 文章详情 | 标题、来源、分类、原文链接、抽取字段、申报清单、标签、正文 | 是 |
 | 其他 | 404 | 兜底页，显示当前访问的路径 | 是 |
 
 **未登录访问任何页面都会被重定向到 `/login`**，登录后回到原来想去的地址。
@@ -48,8 +49,13 @@ npm run dev      # 启动开发服务器 http://localhost:5173
 搜索页对接 `news-insight` 后端的 `GET /v1/search`，响应按 5 大类分组、类内已排好序。
 前端把 `groups[].items[]` 按后端给的类顺序展平成一维列表，再按 **20 条/页** 分页。
 
-字段映射：`article_id` / `title` / `published_at` / `tags` / `relevance.score`。
-详情页需要的 `url`、`body` 不在搜索结果里（`include_body` 默认 false），点进详情时再查 `/v1/articles/{id}`。
+搜索结果里的每条包含 `article_id` / `source` / `url` / `title` / `published_at` / `tags` / `relevance.score`。
+`source` 通过 `src/constants/sources.ts` 映射成中文来源名（未知来源原样显示）；**单击结果**跳转 `/article/:id` 查看详情。
+
+详情页数据来自：
+
+- `GET /v1/articles/{id}` —— 标签（含置信度、原文依据）+ 按 schema 分组的抽取字段（`value` / `raw_text` / `confidence` / `verified`）
+- `GET /v1/articles/{id}/checklist` —— 申报准备清单；后端返回 404（`checklist_not_found`）时页面自动隐藏该区块
 
 ## 登录
 
@@ -86,8 +92,11 @@ insight-web/
 │   │   ├── http.ts           # fetch 封装：类型化、超时、统一错误
 │   │   └── fish.ts           # 业务接口（示例）
 │   ├── components/
-│   │   ├── AppNav.vue        # 顶部导航（三个分页）
+│   │   ├── AppNav.vue        # 顶部导航（三个分页 + 当前账户）
 │   │   └── BaseButton.vue    # 通用按钮（props/emits 示例）
+│   ├── constants/
+│   │   ├── categories.ts     # 一级分类 id ↔ 中文名
+│   │   └── sources.ts        # 新闻来源 id ↔ 中文名
 │   ├── composables/
 │   │   ├── useAsync.ts       # 异步三态封装（data/loading/error）
 │   │   └── useWindowSize.ts  # 窗口尺寸监听
@@ -102,6 +111,7 @@ insight-web/
 │   │   ├── HomeView.vue      # 首页（欢迎语）
 │   │   ├── CategoryView.vue  # 分类浏览
 │   │   ├── SearchView.vue    # 信息检索（智能信息检索）
+│   │   ├── ArticleView.vue   # 文章详情（/article/:id）
 │   │   └── NotFoundView.vue  # 404
 │   ├── App.vue               # 根组件 + 路由过渡（登录页隐藏导航）
 │   └── main.ts               # 应用入口
