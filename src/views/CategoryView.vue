@@ -23,6 +23,12 @@ const articles = ref<ArticleListItem[]>([])
 const articlesLoading = ref(false)
 const articlesError = ref('')
 
+/**
+ * 请求序号：快速连续展开不同大类时，先发出的请求可能后返回，
+ * 只接受最后一次请求的结果，避免 A 类的文章盖在 B 类的面板上。
+ */
+let articlesRequestId = 0
+
 /** 后端返回顺序不可依赖，按词表固定顺序渲染 */
 const ordered = computed<CategoryDef[]>(() => {
   const byId = new Map(categories.value.map((c) => [c.id, c]))
@@ -64,22 +70,28 @@ async function load(): Promise<void> {
 }
 
 async function toggle(id: string): Promise<void> {
+  const requestId = ++articlesRequestId
+
   if (activeId.value === id) {
     activeId.value = ''
     articles.value = []
+    articlesLoading.value = false
     return
   }
+
   activeId.value = id
   articles.value = []
-  articlesLoading.value = true
   articlesError.value = ''
+  articlesLoading.value = true
   try {
     const page = await listArticles({ category: id, limit: 10 })
+    if (requestId !== articlesRequestId) return
     articles.value = page.items
   } catch (e) {
+    if (requestId !== articlesRequestId) return
     articlesError.value = e instanceof Error ? e.message : '加载文章失败，请稍后重试'
   } finally {
-    articlesLoading.value = false
+    if (requestId === articlesRequestId) articlesLoading.value = false
   }
 }
 

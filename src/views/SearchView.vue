@@ -98,14 +98,18 @@ function clear(): void {
   page.value = 1
 }
 
-/** 从分类页带过来的类过滤，用户可一键取消 */
-function clearCategory(): void {
+/** 从分类页带过来的类过滤，用户可一键取消；已经搜过就按原关键词重新检索一次 */
+async function clearCategory(): Promise<void> {
   const query = { ...route.query }
   delete query.category
-  void router.replace({ name: 'search', query })
-  payload.value = null
-  submitted.value = ''
+  await router.replace({ name: 'search', query })
   page.value = 1
+  if (submitted.value) {
+    keyword.value = submitted.value
+    await search()
+  } else {
+    payload.value = null
+  }
 }
 
 /** 带类过滤进入时自动检索（关键词取 URL 里的 q，没有就等用户输入） */
