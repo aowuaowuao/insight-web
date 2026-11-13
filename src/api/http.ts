@@ -56,7 +56,21 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
     })
 
     if (!response.ok) {
-      throw new HttpError(response.status, `请求失败：${response.status} ${response.statusText}`)
+      // 后端统一错误格式：{"error":{"code":...,"message":"..."}}
+      let detail = ''
+      try {
+        const payload = (await response.json()) as { error?: { message?: string } }
+        detail = payload.error?.message ?? ''
+      } catch {
+        // 响应不是 JSON（比如网关返回 HTML），忽略
+      }
+      throw new HttpError(
+        response.status,
+        detail ||
+          (response.status === 502 || response.status === 503
+            ? '后端服务不可用，请确认 news-insight 已启动（默认 http://127.0.0.1:8020）'
+            : `请求失败：${response.status} ${response.statusText}`),
+      )
     }
 
     // 204 无内容
@@ -66,7 +80,11 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
   } catch (error) {
     if (error instanceof HttpError) throw error
     if (error instanceof DOMException && error.name === 'AbortError') {
-      throw new HttpError(0, `请求超时（${timeout}ms）`)
+      throw new HttpError(0, `请求超时（${timeout}ms），后端可能未响应`)
+    }
+    if (error instanceof TypeError) {
+      // fetch 在网络层失败时抛 TypeError：后端没启动 / 代理没通 / 跨域被拦
+      throw new HttpError(0, '无法连接后端服务，请确认后端已启动且地址配置正确')
     }
     throw new HttpError(0, error instanceof Error ? error.message : '未知网络错误')
   } finally {
