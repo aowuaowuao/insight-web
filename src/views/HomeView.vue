@@ -4,21 +4,26 @@
  * 对照规范 2.2.1（二）模块二：
  * （1）顶部导航：Logo / 当前时间 / 头像下拉 —— 见 components/AppNav.vue
  * （2）3 个数据概览卡片：今日新增公告数、本周高相关度公告、待办申报事项，每 5 分钟自动刷新
- * （3）3 个快捷入口：进入分类浏览、发起关键词检索、查看个人中心
- * （4）Top10 个性化推荐：标题 + 分类标签 + 发布时间 + 相关度评分
- * （5）消息通知铃铛（依赖后端接口，未实现，见 AppNav 注释）
+ * （3）快捷入口：分类浏览、关键词检索、申报清单生成、个人中心
+ * （4）Top10 个性化推荐：登录按关注领域/收藏/浏览记录画像，匿名按内容质量与新鲜度
+ * （5）消息通知铃铛 —— 见 components/AppNav.vue
  * （6）侧边栏折叠/展开 —— 见 components/AppNav.vue
  * （7）全局搜索框 —— 见 components/AppNav.vue
  *
- * 数据来源说明：后端目前只有 GET /v1/articles?category=&limit=&offset= 和
- * GET /v1/categories/stats。/v1/articles 不支持按时间范围过滤，所以"今日新增"
- * 与"本周高相关度"是**用最新一页数据在前端统计**的近似值，页面上已注明口径，
- * 避免让人误以为是全库精确统计。等后端补 /v1/stats?range= 后改成一次调用。
+ * 数据来源说明：后台没有全库时间范围统计接口，"今日新增"与"高置信度"仍取最新
+ * 100 篇在本地统计（卡片 hint 已注明口径）；待办与推荐分别来自 GET /v1/todos
+ * 和 GET /v1/recommendations，由后端按截止时间与画像/内容质量排序。
  */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { categoryStats, listCategories } from '@/api/category'
 import { listArticles, type ArticleListItem } from '@/api/articles'
+import {
+  listRecommendations,
+  listTodos,
+  type RecommendationItem,
+  type TodoItem,
+} from '@/api/dashboard'
 import { categoryName } from '@/constants/categories'
 import EmptyState from '@/components/EmptyState.vue'
 import ScoreBadge from '@/components/ScoreBadge.vue'
@@ -30,8 +35,12 @@ const router = useRouter()
 const loading = ref(true)
 const error = ref('')
 
-/** Top10 推荐（按相关度降序取前 10） */
-const recommendations = ref<ArticleListItem[]>([])
+/** Top10 推荐（后端按画像/内容质量打分后排序） */
+const recommendations = ref<RecommendationItem[]>([])
+/** 推荐是否为登录用户个性化结果 */
+const personalized = ref(false)
+/** 首页待办：尚未到期的项目申报截止项 */
+const todos = ref<TodoItem[]>([])
 /** 概览卡片用的原始数据 */
 const latest = ref<ArticleListItem[]>([])
 const totalArticles = ref(0)
@@ -48,15 +57,20 @@ async function load(): Promise<void> {
   loading.value = latest.value.length === 0
   error.value = ''
   try {
-    // 一次取 100 条最新文章用于推荐与概览统计（后端 limit 上限 200）
-    const [page, stats, categories] = await Promise.all([
+    // 最新 100 条用于概览卡片；推荐与待办由后端专门打分/解析（limit 上限 200）
+    const [page, stats, categories, rec, todo] = await Promise.all([
       listArticles({ limit: 100, offset: 0 }),
       categoryStats(),
       listCategories(),
+      listRecommendations(10),
+      listTodos(5),
     ])
 
     latest.value = page.items
     totalArticles.value = page.total
+    recommendations.value = rec.items
+    personalized.value = rec.personalized
+    todos.value = todo
 
     const nameById = new Map(categories.map((item) => [item.id, item.name]))
     categoryCounts.value = stats
@@ -67,19 +81,6 @@ async function load(): Promise<void> {
       }))
       .sort((a, b) => b.count - a.count)
 
-    // 推荐：GET /v1/articles 不返回相关度（那是 /v1/search 专有的，依赖查询词），
-    // 所以这里按分类置信度降序取前 10——置信度高说明模型对这篇的归类更有把握，
-    // 拿来当"值得先看"的代理指标，页面上如实标注口径，不假装是相关度。
-    const scored = page.items
-      .map((item) => ({ item, percent: scoreToPercent(item.category_confidence ?? null) }))
-      .filter(
-        (entry): entry is { item: ArticleListItem; percent: number } => entry.percent !== null,
-      )
-      .sort((a, b) => b.percent - a.percent)
-      .slice(0, 10)
-      .map((entry) => entry.item)
-
-    recommendations.value = scored.length ? scored : page.items.slice(0, 10)
     refreshedAt.value = new Date().toLocaleTimeString('zh-CN', {
       hour: '2-digit',
       minute: '2-digit',
@@ -124,8 +125,8 @@ const highConfidenceCount = computed(
     }).length,
 )
 
-/** 待办申报事项：项目申报类里已提取到截止时间、且截止时间在未来的条数（当前接口无 deadline 字段，展示为"待接入"） */
-const pendingCount = computed(() => null)
+/** 待办申报事项：项目申报类里已提取到截止时间、且截止时间在未来的条数 */
+const pendingCount = computed(() => todos.value.length)
 
 const cards = computed(() => [
   {
@@ -149,7 +150,7 @@ const cards = computed(() => [
     label: '待办申报事项',
     value: pendingCount.value,
     unit: '项',
-    hint: '需后端提供截止时间字段',
+    hint: '项目申报公告中尚未到期的截止时间（Top5）',
     to: { name: 'category', query: { category: 'project_application' } },
   },
 ])
@@ -157,6 +158,12 @@ const cards = computed(() => [
 const quickLinks = [
   { label: '分类浏览', desc: '按 6 大类查看全部公告', to: { name: 'category' }, icon: '📁' },
   { label: '关键词检索', desc: '输入关键词按相关度排序', to: { name: 'search' }, icon: '🔍' },
+  {
+    label: '申报清单生成',
+    desc: '查看项目申报公告并生成准备清单',
+    to: { name: 'category', query: { category: 'project_application' } },
+    icon: '📋',
+  },
   { label: '个人中心', desc: '收藏、历史与个性化设置', to: { name: 'profile' }, icon: '👤' },
 ]
 
@@ -195,6 +202,24 @@ function openArticle(id: string): void {
       </li>
     </ul>
 
+    <!-- 待办明细：解释第三张统计卡的数字来自哪里 -->
+    <section v-if="todos.length" class="todo">
+      <h2 class="todo__title">近期申报截止</h2>
+      <ul class="todo__list">
+        <li v-for="item in todos" :key="item.article_id" class="todo__item">
+          <RouterLink :to="{ name: 'article', params: { id: item.article_id } }" class="todo__link">
+            <span class="todo__name">{{ item.title }}</span>
+            <span class="todo__meta">
+              <span class="todo__date num">{{ item.deadline }}</span>
+              <span class="todo__days" :class="{ 'todo__days--soon': item.days_left <= 3 }">
+                {{ item.days_left === 0 ? '今天截止' : `剩 ${item.days_left} 天` }}
+              </span>
+            </span>
+          </RouterLink>
+        </li>
+      </ul>
+    </section>
+
     <!-- 快捷入口（规范模块二（3）） -->
     <ul class="quick">
       <li v-for="link in quickLinks" :key="link.label" class="quick__item">
@@ -213,9 +238,8 @@ function openArticle(id: string): void {
       <header class="rec__head">
         <h2 class="rec__title">个性化推荐 · Top10</h2>
         <p class="rec__hint">
-          按分类置信度排序<template v-if="recommendations.length">
-            （共 {{ recommendations.length }} 条）
-          </template>
+          {{ personalized ? '按你的关注领域、收藏与浏览记录排序' : '按内容质量与新鲜度排序' }}
+          <template v-if="recommendations.length">（共 {{ recommendations.length }} 条）</template>
         </p>
       </header>
 
@@ -228,7 +252,7 @@ function openArticle(id: string): void {
             <span class="rec__item-title">{{ item.title }}</span>
             <span class="rec__meta">
               <span class="rec__time">{{ formatRelativeTime(item.published_at) }}</span>
-              <ScoreBadge :score="item.category_confidence ?? null" label="置信度" />
+              <ScoreBadge :score="item.relevance" label="相关度" />
             </span>
           </button>
         </li>
@@ -238,7 +262,7 @@ function openArticle(id: string): void {
         v-else
         variant="no-data"
         title="暂无推荐内容"
-        description="等后端分析完文章后，这里会按分类置信度展示 Top10。"
+        description="等后端分析完文章后，这里会按内容质量与个性化偏好展示 Top10。"
       />
     </section>
 
@@ -350,6 +374,67 @@ function openArticle(id: string): void {
 .cards__hint {
   color: var(--color-text-disabled);
   font-size: var(--font-size-xs);
+}
+
+/* ── 待办明细 ───────────────────────────────────────── */
+.todo {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.todo__title {
+  margin: 0;
+  font-size: var(--font-size-h3);
+}
+
+.todo__list {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.todo__link {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-split);
+  border-radius: var(--radius-base);
+  background: var(--color-bg);
+  color: inherit;
+  text-decoration: none;
+  transition: border-color var(--duration-base) var(--ease-out);
+}
+
+.todo__link:hover {
+  border-color: var(--color-primary-hover);
+}
+
+.todo__name {
+  overflow: hidden;
+  font-size: var(--font-size-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.todo__meta {
+  display: flex;
+  flex-shrink: 0;
+  gap: var(--space-2);
+  align-items: center;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.todo__days {
+  color: var(--color-success);
+}
+
+.todo__days--soon {
+  color: var(--color-warning);
 }
 
 /* ── 快捷入口 ───────────────────────────────────────── */

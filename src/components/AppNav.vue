@@ -24,7 +24,7 @@ import { formatRelativeTime } from '@/utils/format'
 const router = useRouter()
 const route = useRoute()
 const auth = useAuthStore()
-const { displayName, isAdmin } = storeToRefs(auth)
+const { user, displayName, isAdmin } = storeToRefs(auth)
 
 /** 侧边栏折叠状态（规范模块二（6）） */
 const collapsed = ref(false)
@@ -61,6 +61,20 @@ onMounted(() => {
   void loadNotifications()
   bellTimer = setInterval(() => void loadNotifications(), 60_000)
 })
+
+/** 切换账号时必须清掉上一位用户的未读角标与列表，迟到的轮询响应也要作废 */
+watch(
+  () => user.value?.id ?? null,
+  (nextUserId, previousUserId) => {
+    if (nextUserId === previousUserId) return
+    notificationRequestId += 1
+    bellLoading.value = false
+    bellOpen.value = false
+    notifications.value = []
+    unreadCount.value = 0
+    if (nextUserId !== null) void loadNotifications()
+  },
+)
 
 async function toggleBell(): Promise<void> {
   bellOpen.value = !bellOpen.value

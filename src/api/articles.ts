@@ -23,10 +23,20 @@ export interface ArticleListItem {
   body: string | null
   /** 列表的标签没有 evidence 字段，与 /v1/search 的 SearchTag 不是同一个形状 */
   tags: ListTag[]
+  /** 列表/推荐统一由后端打出的相关度（0-1）；旧后端不返回时为 null */
+  relevance?: number | null
+  /** 相关度理由，例如「匹配关注行业」 */
+  relevance_reason?: string | null
 }
 
-/** 列表排序键；后端只接受这四个值 */
-export type ArticleSort = 'published_desc' | 'published_asc' | 'confidence_desc' | 'confidence_asc'
+/** 列表排序键；后端接受发布时间/相关度两向，相关度由后端打分 */
+export type ArticleSort =
+  | 'published_desc'
+  | 'published_asc'
+  | 'confidence_desc'
+  | 'confidence_asc'
+  | 'relevance_desc'
+  | 'relevance_asc'
 
 export interface ArticleListPage {
   items: ArticleListItem[]

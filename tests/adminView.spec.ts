@@ -124,6 +124,48 @@ describe('AdminView Tab 状态隔离', () => {
     expect(wrapper.find('.tabs__item--active').text()).toBe('账号管理')
   })
 
+  it('站点编辑以 name 为主键提交 XPath 与渲染开关', async () => {
+    adminApi.listAdminSites.mockResolvedValue([
+      {
+        name: 'most_kjjh',
+        list_url: 'https://example.com/list',
+        category: 'project_application',
+        region: '上海',
+        timezone: 'Asia/Shanghai',
+        render: false,
+        enabled: true,
+        item_xpath: '//li',
+        title_xpath: './/a',
+        url_xpath: './/a/@href',
+        date_xpath: '',
+        has_api: false,
+      },
+    ])
+    adminApi.updateAdminSite.mockResolvedValue({ name: 'most_kjjh' })
+    const wrapper = await mountAdmin()
+
+    await clickTab(wrapper, 1)
+    await wrapper
+      .findAll('.btn--text')
+      .find((node) => node.text() === '编辑')!
+      .trigger('click')
+    const inputs = wrapper.findAll('.modal input.input')
+    expect((inputs[0].element as HTMLInputElement).disabled).toBe(true)
+    expect((inputs[5].element as HTMLInputElement).value).toBe('//li')
+    await inputs[5].setValue('//article')
+    const checks = wrapper.findAll('.modal input[type="checkbox"]')
+    await checks[0].setValue(true)
+    await wrapper.findAll('.modal .btn--primary')[0].trigger('click')
+    await flushPromises()
+
+    expect(adminApi.updateAdminSite).toHaveBeenCalledWith(
+      'most_kjjh',
+      expect.objectContaining({ item_xpath: '//article', render: true }),
+    )
+    const patch = adminApi.updateAdminSite.mock.calls[0][1] as Record<string, unknown>
+    expect(patch).not.toHaveProperty('name')
+  })
+
   it('站点列表的迟到响应不覆盖后发请求的结果', async () => {
     const pending = deferred<unknown[]>()
     adminApi.listAdminSites.mockReturnValueOnce(pending.promise).mockResolvedValueOnce([])

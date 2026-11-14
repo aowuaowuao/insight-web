@@ -232,8 +232,8 @@ describe('排序与分页', () => {
     const { wrapper } = await mountPage()
     for (const [label, value] of [
       ['发布时间 ↑', 'published_asc'],
-      ['相关度 ↓', 'confidence_desc'],
-      ['相关度 ↑', 'confidence_asc'],
+      ['相关度 ↓', 'relevance_desc'],
+      ['相关度 ↑', 'relevance_asc'],
       ['发布时间 ↓', 'published_desc'],
     ] as const) {
       await buttonByText(wrapper, label)!.trigger('click')

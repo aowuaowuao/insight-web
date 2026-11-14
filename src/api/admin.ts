@@ -3,16 +3,20 @@ import type { AuthUser } from './auth'
 
 export type AdminUser = AuthUser
 
+/** 站点配置由 news-crawler 的 sources.local.json 管理，name 是主键（无数字 id） */
 export interface AdminSite {
-  id: number
   name: string
   list_url: string
   category: string
   region: string
   timezone: string
+  render: boolean
   enabled: boolean
-  created_at: string
-  updated_at: string
+  item_xpath: string
+  title_xpath: string
+  url_xpath: string
+  date_xpath: string
+  has_api: boolean
 }
 
 export interface AdminStats {
@@ -110,7 +114,12 @@ export interface AdminSiteInput {
   category?: string
   region?: string
   timezone?: string
+  render?: boolean
   enabled?: boolean
+  item_xpath?: string
+  title_xpath?: string
+  url_xpath?: string
+  date_xpath?: string
 }
 
 export async function createAdminSite(input: AdminSiteInput): Promise<AdminSite> {
@@ -120,14 +129,16 @@ export async function createAdminSite(input: AdminSiteInput): Promise<AdminSite>
 }
 
 export async function updateAdminSite(
-  siteId: number,
+  siteName: string,
   patch: Partial<AdminSiteInput>,
 ): Promise<AdminSite> {
-  return http.patch<{ data: AdminSite }>(`/v1/admin/sites/${siteId}`, patch).then((p) => p.data)
+  return http
+    .patch<{ data: AdminSite }>(`/v1/admin/sites/${encodeURIComponent(siteName)}`, patch)
+    .then((p) => p.data)
 }
 
-export async function deleteAdminSite(siteId: number): Promise<void> {
-  await http.delete<void>(`/v1/admin/sites/${siteId}`, { retries: 0 })
+export async function deleteAdminSite(siteName: string): Promise<void> {
+  await http.delete<void>(`/v1/admin/sites/${encodeURIComponent(siteName)}`, { retries: 0 })
 }
 
 export async function getAdminStats(days = 7): Promise<AdminStats> {

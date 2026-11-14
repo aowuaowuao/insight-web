@@ -5,10 +5,9 @@
  * ── 后端缺口：前端不伪造，界面上显式标注 ──────────────────────────
  * 1. 「行业领域」：GET /v1/articles 支持 industry 单值过滤，候选来自 /v1/industries
  *    （受控词表 + 每行业文章计数）。一次只能选一个行业，再点一次取消。
- * 2. 「相关度评分」：列表接口不返回检索相关度（/v1/search 才有 relevance.score）。
- *    卡片统一传 score=null；不拿 category_confidence（分类置信度）冒充相关度——
- *    两者量纲完全不同，冒充会让用户以为排序按相关度，实际按另一套分。
- *    sort=confidence_* 排的确实是分类置信度，chip 上用 title 把这件事说明白。
+ * 2. 「相关度评分」：GET /v1/articles 现在会为每篇返回后端统一计算的 relevance
+ *    （与 /v1/search 的 relevance.score 同口径，0-1），卡片直接按绿≥80/黄≥60/红<60 展示。
+ *    sort=relevance_* 由后端按该分数排序，不再拿 category_confidence 冒充。
  * 3. 「关键要素摘要」：列表接口同样没有该字段，卡片不传 highlights。
  * 4. 后端 category 只接受单值、也没有「多分类 OR」。四个 Tab 因此各自只能映射
  *    一个大类；人才申报 / 企业资质申报 / 其他 三个大类用二级「大类」chip 直达，
@@ -61,22 +60,21 @@ const TIME_RANGES: { value: TimeRange; label: string }[] = [
 ]
 
 /**
- * 排序：后端只认这四个值，前端不做二次排序。
- * confidence_* 排的是分类置信度，不是检索相关度（列表接口没有相关度），
- * 所以 label 写「相关度」但 title 说清口径，避免用户以为是搜索打分。
+ * 排序：后端接受发布时间/相关度两向，前端不做二次排序。
+ * relevance_* 使用后端统一打出的 relevance 分数，与卡片徽标同源。
  */
 const SORT_OPTIONS: { value: ArticleSort; label: string; hint: string }[] = [
   { value: 'published_desc', label: '发布时间 ↓', hint: '最新发布在前' },
   { value: 'published_asc', label: '发布时间 ↑', hint: '最早发布在前' },
   {
-    value: 'confidence_desc',
+    value: 'relevance_desc',
     label: '相关度 ↓',
-    hint: '按分类置信度从高到低（列表接口不返回独立相关度评分）',
+    hint: '按后端相关度评分从高到低',
   },
   {
-    value: 'confidence_asc',
+    value: 'relevance_asc',
     label: '相关度 ↑',
-    hint: '按分类置信度从低到高（列表接口不返回独立相关度评分）',
+    hint: '按后端相关度评分从低到高',
   },
 ]
 
@@ -202,7 +200,9 @@ function isArticleSort(value: unknown): value is ArticleSort {
     value === 'published_desc' ||
     value === 'published_asc' ||
     value === 'confidence_desc' ||
-    value === 'confidence_asc'
+    value === 'confidence_asc' ||
+    value === 'relevance_desc' ||
+    value === 'relevance_asc'
   )
 }
 
@@ -691,9 +691,6 @@ onMounted(() => {
     </section>
 
     <p class="status" role="status">{{ statusText }}</p>
-    <p class="gap-note">
-      列表接口暂不返回相关度评分与关键要素摘要，卡片先不展示这两项（相关度排序按分类置信度执行）。
-    </p>
 
     <SkeletonList v-if="loading" :rows="skeletonRows" />
 
@@ -721,7 +718,7 @@ onMounted(() => {
 
       <template v-else>
         <div class="results">
-          <!-- 列表接口没有相关度评分，score 固定传 null（不拿分类置信度冒充） -->
+          <!-- 相关度与排序均由后端统一打分，卡片徽标和排序键同源 -->
           <ArticleCard
             v-for="item in items"
             :key="item.article_id"
@@ -732,7 +729,7 @@ onMounted(() => {
             :category="item.category"
             :industry="item.industry"
             :industry-name="item.industry ? industryName(item.industry) : ''"
-            :score="null"
+            :score="item.relevance ?? null"
           />
         </div>
 

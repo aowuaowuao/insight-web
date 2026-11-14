@@ -8,6 +8,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { createMemoryHistory, createRouter, type Router } from 'vue-router'
 import type { NotificationItem } from '@/api/notifications'
+import { useAuthStore } from '@/stores/auth'
 
 const notificationsApi = vi.hoisted(() => ({
   listNotifications: vi.fn(async () => ({ items: [] as NotificationItem[], total: 0, unread: 0 })),
@@ -365,5 +366,45 @@ describe('AppNav', () => {
     await flushPromises()
     expect(wrapper.find('.nav__badge').exists()).toBe(false)
     expect(wrapper.text()).not.toContain('加载中…')
+  })
+
+  it('登出或切换账号后清空上一位用户的未读角标', async () => {
+    const base: NotificationItem = {
+      id: 1,
+      article_id: 'a1',
+      kind: 'project_application',
+      title: '新增项目申报公告',
+      message: '通知一',
+      created_at: '2026-11-14T10:00:00Z',
+      read: false,
+      published_at: '2026-11-14 09:00:00',
+    }
+    notificationsApi.listNotifications.mockResolvedValue({ items: [base], total: 1, unread: 1 })
+    localStorage.setItem(
+      'insight-web.auth.user',
+      JSON.stringify({
+        id: 1,
+        username: 'alice',
+        display_name: 'Alice',
+        department: '',
+        role: 'user',
+        status: 'active',
+        must_change_password: false,
+        last_login_at: null,
+        created_at: '',
+        updated_at: '',
+        is_admin: false,
+      }),
+    )
+
+    const { wrapper } = await mountWithRouter(AppNav)
+    await flushPromises()
+    expect(wrapper.find('.nav__badge').text()).toBe('1')
+
+    const auth = useAuthStore()
+    auth.clearSession()
+    await flushPromises()
+    expect(wrapper.find('.nav__badge').exists()).toBe(false)
+    expect(wrapper.find('.nav__bell-panel').exists()).toBe(false)
   })
 })

@@ -202,15 +202,22 @@ watch(statsDays, () => void loadStats())
 // ── 站点管理 ───────────────────────────────────────────
 const sites = ref<AdminSite[]>([])
 const siteModalOpen = ref(false)
-const editingSiteId = ref<number | null>(null)
-const siteForm = ref<AdminSiteInput>({
+/** 站点以 name 为主键（由 news-crawler 的 sources.local.json 管理） */
+const editingSiteName = ref<string | null>(null)
+const emptySiteForm = (): AdminSiteInput => ({
   name: '',
   list_url: '',
   category: '',
   region: '',
   timezone: 'Asia/Shanghai',
+  render: false,
   enabled: true,
+  item_xpath: '//li',
+  title_xpath: './/a',
+  url_xpath: './/a/@href',
+  date_xpath: '',
 })
+const siteForm = ref<AdminSiteInput>(emptySiteForm())
 
 let sitesRequestId = 0
 
@@ -229,27 +236,25 @@ async function loadSites(): Promise<void> {
 }
 
 function openSiteCreate(): void {
-  editingSiteId.value = null
-  siteForm.value = {
-    name: '',
-    list_url: '',
-    category: '',
-    region: '',
-    timezone: 'Asia/Shanghai',
-    enabled: true,
-  }
+  editingSiteName.value = null
+  siteForm.value = emptySiteForm()
   siteModalOpen.value = true
 }
 
 function openSiteEdit(site: AdminSite): void {
-  editingSiteId.value = site.id
+  editingSiteName.value = site.name
   siteForm.value = {
     name: site.name,
     list_url: site.list_url,
     category: site.category,
     region: site.region,
     timezone: site.timezone || 'Asia/Shanghai',
+    render: site.render,
     enabled: site.enabled,
+    item_xpath: site.item_xpath,
+    title_xpath: site.title_xpath,
+    url_xpath: site.url_xpath,
+    date_xpath: site.date_xpath,
   }
   siteModalOpen.value = true
 }
@@ -261,11 +266,14 @@ async function submitSite(): Promise<void> {
   }
   errorByTab.sites = ''
   try {
-    if (editingSiteId.value === null) {
+    if (editingSiteName.value === null) {
       await createAdminSite(siteForm.value)
       flash('站点已新增')
     } else {
-      await updateAdminSite(editingSiteId.value, siteForm.value)
+      // name 是主键，更新时不能改名；其余字段全部提交给 crawler 配置
+      const patch: Partial<AdminSiteInput> = { ...siteForm.value }
+      delete patch.name
+      await updateAdminSite(editingSiteName.value, patch)
       flash('站点已更新')
     }
     siteModalOpen.value = false
@@ -279,7 +287,7 @@ async function removeSite(site: AdminSite): Promise<void> {
   if (!window.confirm(`确定删除站点「${site.name}」吗？删除后不可恢复。`)) return
   errorByTab.sites = ''
   try {
-    await deleteAdminSite(site.id)
+    await deleteAdminSite(site.name)
     flash('站点已删除')
     await loadSites()
   } catch (err) {
@@ -290,7 +298,7 @@ async function removeSite(site: AdminSite): Promise<void> {
 async function toggleSite(site: AdminSite): Promise<void> {
   errorByTab.sites = ''
   try {
-    await updateAdminSite(site.id, { enabled: !site.enabled })
+    await updateAdminSite(site.name, { enabled: !site.enabled })
     await loadSites()
   } catch (err) {
     errorByTab.sites = describeError(err)
@@ -571,17 +579,19 @@ onMounted(() => {
               <th>分类</th>
               <th>地区</th>
               <th>时区</th>
+              <th>渲染</th>
               <th>状态</th>
               <th>操作</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="site in sites" :key="site.id">
+            <tr v-for="site in sites" :key="site.name">
               <td>{{ site.name }}</td>
               <td class="ellipsis" :title="site.list_url">{{ site.list_url }}</td>
               <td>{{ site.category || '—' }}</td>
               <td>{{ site.region || '—' }}</td>
               <td>{{ site.timezone }}</td>
+              <td>{{ site.render ? '需要' : '否' }}</td>
               <td>
                 <span class="state" :class="site.enabled ? 'state--on' : 'state--off'">{{
                   site.enabled ? '启用' : '停用'
@@ -604,7 +614,7 @@ onMounted(() => {
               </td>
             </tr>
             <tr v-if="!sites.length">
-              <td colspan="7" class="empty">暂无站点</td>
+              <td colspan="8" class="empty">暂无站点</td>
             </tr>
           </tbody>
         </table>
@@ -768,9 +778,10 @@ onMounted(() => {
     <!-- 站点编辑弹窗 -->
     <div v-if="siteModalOpen" class="modal" role="dialog" aria-modal="true" aria-label="站点编辑">
       <div class="modal__card">
-        <h2 class="modal__title">{{ editingSiteId === null ? '新增站点' : '编辑站点' }}</h2>
+        <h2 class="modal__title">{{ editingSiteName === null ? '新增站点' : '编辑站点' }}</h2>
         <label class="field"
-          ><span>名称</span><input v-model="siteForm.name" class="input"
+          ><span>名称</span
+          ><input v-model="siteForm.name" class="input" :disabled="editingSiteName !== null"
         /></label>
         <label class="field"
           ><span>列表地址</span><input v-model="siteForm.list_url" class="input"
@@ -785,6 +796,23 @@ onMounted(() => {
         <label class="field"
           ><span>时区</span><input v-model="siteForm.timezone" class="input"
         /></label>
+        <label class="field"
+          ><span>列表项 XPath</span><input v-model="siteForm.item_xpath" class="input"
+        /></label>
+        <label class="field"
+          ><span>标题 XPath</span><input v-model="siteForm.title_xpath" class="input"
+        /></label>
+        <label class="field"
+          ><span>链接 XPath</span><input v-model="siteForm.url_xpath" class="input"
+        /></label>
+        <label class="field"
+          ><span>日期 XPath（可选）</span><input v-model="siteForm.date_xpath" class="input"
+        /></label>
+        <label class="check"
+          ><input v-model="siteForm.render" type="checkbox" /><span
+            >列表页需要浏览器渲染</span
+          ></label
+        >
         <label class="check"
           ><input v-model="siteForm.enabled" type="checkbox" /><span>启用</span></label
         >
