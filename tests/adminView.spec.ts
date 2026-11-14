@@ -2,8 +2,10 @@
  * 管理控制台 Tab 状态隔离测试。
  * 守护：统计加载失败/仍在加载时不得污染其它 Tab；站点动作失败不得写到切换后的 Tab。
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { flushPromises, mount } from '@vue/test-utils'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
+
+enableAutoUnmount(afterEach)
 
 const adminApi = vi.hoisted(() => ({
   getAdminStats: vi.fn(),
@@ -148,6 +150,28 @@ describe('AdminView Tab 状态隔离', () => {
     await flushPromises()
     expect(wrapper.text()).toContain('共 0 个站点')
     expect(wrapper.text()).not.toContain('迟到站点')
+  })
+
+  it('站点旧请求迟到失败不清新请求的错误与加载状态', async () => {
+    const first = deferred<unknown[]>()
+    const second = deferred<unknown[]>()
+    adminApi.listAdminSites.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise)
+    const wrapper = await mountAdmin()
+
+    await clickTab(wrapper, 1)
+    await clickTab(wrapper, 2)
+    await clickTab(wrapper, 1)
+    expect(wrapper.text()).toContain('加载中…')
+
+    first.reject(new Error('旧请求失败'))
+    await flushPromises()
+    expect(wrapper.text()).toContain('加载中…')
+    expect(wrapper.find('.notice--error').exists()).toBe(false)
+
+    second.resolve([])
+    await flushPromises()
+    expect(wrapper.text()).toContain('共 0 个站点')
+    expect(wrapper.text()).not.toContain('加载中…')
   })
 
   it('账号列表的迟到响应不覆盖后发请求的结果', async () => {
