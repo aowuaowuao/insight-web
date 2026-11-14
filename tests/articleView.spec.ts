@@ -295,7 +295,7 @@ describe('ArticleView 申报清单', () => {
   }
 
   it('点「弹窗查看」打开清单弹窗', async () => {
-    getArticle.mockResolvedValue(detail())
+    getArticle.mockResolvedValue(projectDetail())
     getChecklist.mockResolvedValue(checklist)
     const wrapper = await mountView()
     expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
@@ -310,7 +310,7 @@ describe('ArticleView 申报清单', () => {
   })
 
   it('点「下载清单」用 Blob 生成 txt 文件', async () => {
-    getArticle.mockResolvedValue(detail())
+    getArticle.mockResolvedValue(projectDetail())
     getChecklist.mockResolvedValue(checklist)
     const createObjectURL = vi.fn(() => 'blob:mock')
     const revokeObjectURL = vi.fn()
@@ -363,7 +363,7 @@ describe('ArticleView 申报清单', () => {
     expect(wrapper.text()).toContain('第一段正文')
   })
 
-  it('非申报文章不显示申报清单区块', async () => {
+  it('非申报文章不显示申报清单区块，也不请求清单接口', async () => {
     getArticle.mockResolvedValue(detail())
     getChecklist.mockResolvedValue(null)
     const wrapper = await mountView()
@@ -371,6 +371,7 @@ describe('ArticleView 申报清单', () => {
       false,
     )
     expect(wrapper.text()).not.toContain('申报准备清单')
+    expect(getChecklist).not.toHaveBeenCalled()
   })
 
   it('生成期间切换文章时丢弃上一篇文章的迟到响应', async () => {

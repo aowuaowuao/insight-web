@@ -309,14 +309,17 @@ async function load(id: string): Promise<void> {
         if (requestId === loadRequestId) tagDefs.value = defs
       })
       .catch(() => undefined)
-    void getChecklist(id)
-      .then((result) => {
-        // 生成成功会推进 checklistRequestId，迟到的 404/null 不得清空新生成的清单
-        if (requestId === loadRequestId && checklistRequest === checklistRequestId) {
-          checklist.value = result
-        }
-      })
-      .catch(() => undefined)
+    // 非项目申报文章没有清单，直接不发请求：既省一次往返，也避免必然的 404 出现在控制台
+    if (detail.tags.some((item) => item.tag === 'project_application')) {
+      void getChecklist(id)
+        .then((result) => {
+          // 生成成功会推进 checklistRequestId，迟到的 404/null 不得清空新生成的清单
+          if (requestId === loadRequestId && checklistRequest === checklistRequestId) {
+            checklist.value = result
+          }
+        })
+        .catch(() => undefined)
+    }
     void loadRelated(id, detail.category, requestId)
   } catch (err) {
     if (requestId !== loadRequestId) return
