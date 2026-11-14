@@ -34,7 +34,14 @@ export interface TodoItem {
   days_left: number
 }
 
-export async function listTodos(limit = 5): Promise<TodoItem[]> {
-  const payload = await http.get<{ data: TodoItem[] }>('/v1/todos', { params: { limit } })
-  return payload.data
+export interface TodoPage {
+  items: TodoItem[]
+  total: number
+}
+
+export async function listTodos(limit = 5): Promise<TodoPage> {
+  const payload = await http.get<{ data: TodoItem[]; meta?: { total?: number } }>('/v1/todos', {
+    params: { limit },
+  })
+  return { items: payload.data, total: payload.meta?.total ?? payload.data.length }
 }

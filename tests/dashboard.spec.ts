@@ -41,9 +41,17 @@ describe('listTodos', () => {
     vi.restoreAllMocks()
   })
 
-  it('返回待办列表并透传 limit', async () => {
-    const spy = vi.spyOn(http, 'get').mockResolvedValue({ data: [TODO] })
-    await expect(listTodos(5)).resolves.toEqual([TODO])
+  it('返回待办列表、总数并透传 limit', async () => {
+    const spy = vi.spyOn(http, 'get').mockResolvedValue({
+      data: [TODO],
+      meta: { total: 22, limit: 5 },
+    })
+    await expect(listTodos(5)).resolves.toEqual({ items: [TODO], total: 22 })
     expect(spy).toHaveBeenCalledWith('/v1/todos', { params: { limit: 5 } })
+  })
+
+  it('meta 缺失时用当前页条数兜底', async () => {
+    vi.spyOn(http, 'get').mockResolvedValue({ data: [TODO] })
+    await expect(listTodos(5)).resolves.toEqual({ items: [TODO], total: 1 })
   })
 })

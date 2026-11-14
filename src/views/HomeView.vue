@@ -39,8 +39,10 @@ const error = ref('')
 const recommendations = ref<RecommendationItem[]>([])
 /** 推荐是否为登录用户个性化结果 */
 const personalized = ref(false)
-/** 首页待办：尚未到期的项目申报截止项 */
+/** 首页待办：尚未到期的项目申报截止项（只展示最近 5 项） */
 const todos = ref<TodoItem[]>([])
+/** 待办总数（与卡片口径一致，不受列表 limit 影响） */
+const todoTotal = ref(0)
 /** 概览卡片用的原始数据 */
 const latest = ref<ArticleListItem[]>([])
 const totalArticles = ref(0)
@@ -56,37 +58,53 @@ let refreshTimer: ReturnType<typeof setInterval> | null = null
 async function load(): Promise<void> {
   loading.value = latest.value.length === 0
   error.value = ''
-  try {
-    // 最新 100 条用于概览卡片；推荐与待办由后端专门打分/解析（limit 上限 200）
-    const [page, stats, categories, rec, todo] = await Promise.all([
+  // 分块降级：推荐/待办单独失败时，概览卡片与另一块照常展示，不让整页空白
+  const [pageResult, statsResult, categoriesResult, recResult, todoResult] =
+    await Promise.allSettled([
       listArticles({ limit: 100, offset: 0 }),
       categoryStats(),
       listCategories(),
       listRecommendations(10),
       listTodos(5),
     ])
-
-    latest.value = page.items
-    totalArticles.value = page.total
-    recommendations.value = rec.items
-    personalized.value = rec.personalized
-    todos.value = todo
-
-    const nameById = new Map(categories.map((item) => [item.id, item.name]))
-    categoryCounts.value = stats
-      .map((item) => ({
-        id: item.category,
-        name: nameById.get(item.category) ?? categoryName(item.category),
-        count: item.count,
-      }))
-      .sort((a, b) => b.count - a.count)
-
+  const failed: string[] = []
+  try {
+    if (pageResult.status === 'fulfilled') {
+      latest.value = pageResult.value.items
+      totalArticles.value = pageResult.value.total
+    } else {
+      failed.push('公告列表')
+    }
+    if (recResult.status === 'fulfilled') {
+      recommendations.value = recResult.value.items
+      personalized.value = recResult.value.personalized
+    } else {
+      failed.push('推荐')
+    }
+    if (todoResult.status === 'fulfilled') {
+      todos.value = todoResult.value.items
+      todoTotal.value = todoResult.value.total
+    } else {
+      failed.push('待办')
+    }
+    if (categoriesResult.status === 'fulfilled' && statsResult.status === 'fulfilled') {
+      const categories = categoriesResult.value
+      const nameById = new Map(categories.map((item) => [item.id, item.name]))
+      categoryCounts.value = statsResult.value
+        .map((item) => ({
+          id: item.category,
+          name: nameById.get(item.category) ?? categoryName(item.category),
+          count: item.count,
+        }))
+        .sort((a, b) => b.count - a.count)
+    } else {
+      failed.push('分类分布')
+    }
+    if (failed.length) error.value = `部分数据加载失败：${failed.join('、')}`
     refreshedAt.value = new Date().toLocaleTimeString('zh-CN', {
       hour: '2-digit',
       minute: '2-digit',
     })
-  } catch (e) {
-    error.value = e instanceof Error ? e.message : '加载首页数据失败'
   } finally {
     loading.value = false
   }
@@ -126,7 +144,7 @@ const highConfidenceCount = computed(
 )
 
 /** 待办申报事项：项目申报类里已提取到截止时间、且截止时间在未来的条数 */
-const pendingCount = computed(() => todos.value.length)
+const pendingCount = computed(() => todoTotal.value)
 
 const cards = computed(() => [
   {
@@ -150,8 +168,8 @@ const cards = computed(() => [
     label: '待办申报事项',
     value: pendingCount.value,
     unit: '项',
-    hint: '项目申报公告中尚未到期的截止时间（Top5）',
-    to: { name: 'category', query: { category: 'project_application' } },
+    hint: '项目申报公告中尚未到期的截止时间（展示最近 5 项）',
+    to: { name: 'category', query: { cat: 'project_application' } },
   },
 ])
 
@@ -161,7 +179,7 @@ const quickLinks = [
   {
     label: '申报清单生成',
     desc: '查看项目申报公告并生成准备清单',
-    to: { name: 'category', query: { category: 'project_application' } },
+    to: { name: 'category', query: { cat: 'project_application' } },
     icon: '📋',
   },
   { label: '个人中心', desc: '收藏、历史与个性化设置', to: { name: 'profile' }, icon: '👤' },

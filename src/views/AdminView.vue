@@ -204,6 +204,8 @@ const sites = ref<AdminSite[]>([])
 const siteModalOpen = ref(false)
 /** 站点以 name 为主键（由 news-crawler 的 sources.local.json 管理） */
 const editingSiteName = ref<string | null>(null)
+/** 当前编辑的是接口型源：list_url/XPath 由 api 配置决定，表单不可改也不参与提交 */
+const editingSiteHasApi = ref(false)
 const emptySiteForm = (): AdminSiteInput => ({
   name: '',
   list_url: '',
@@ -237,12 +239,14 @@ async function loadSites(): Promise<void> {
 
 function openSiteCreate(): void {
   editingSiteName.value = null
+  editingSiteHasApi.value = false
   siteForm.value = emptySiteForm()
   siteModalOpen.value = true
 }
 
 function openSiteEdit(site: AdminSite): void {
   editingSiteName.value = site.name
+  editingSiteHasApi.value = site.has_api
   siteForm.value = {
     name: site.name,
     list_url: site.list_url,
@@ -260,8 +264,9 @@ function openSiteEdit(site: AdminSite): void {
 }
 
 async function submitSite(): Promise<void> {
-  if (!siteForm.value.name.trim() || !siteForm.value.list_url.trim()) {
-    errorByTab.sites = '站点名称与列表地址不能为空'
+  const isApiSite = editingSiteName.value !== null && editingSiteHasApi.value
+  if (!siteForm.value.name.trim() || (!isApiSite && !siteForm.value.list_url.trim())) {
+    errorByTab.sites = isApiSite ? '站点名称不能为空' : '站点名称与列表地址不能为空'
     return
   }
   errorByTab.sites = ''
@@ -270,9 +275,16 @@ async function submitSite(): Promise<void> {
       await createAdminSite(siteForm.value)
       flash('站点已新增')
     } else {
-      // name 是主键，更新时不能改名；其余字段全部提交给 crawler 配置
+      // name 是主键，更新时不能改名；接口型源的抓取地址与 XPath 由 api 配置维护
       const patch: Partial<AdminSiteInput> = { ...siteForm.value }
       delete patch.name
+      if (isApiSite) {
+        delete patch.list_url
+        delete patch.item_xpath
+        delete patch.title_xpath
+        delete patch.url_xpath
+        delete patch.date_xpath
+      }
       await updateAdminSite(editingSiteName.value, patch)
       flash('站点已更新')
     }
@@ -308,6 +320,9 @@ async function toggleSite(site: AdminSite): Promise<void> {
 // ── 账号管理 ───────────────────────────────────────────
 const users = ref<AdminUser[]>([])
 const userTotal = ref(0)
+const userPage = ref(1)
+const USER_PAGE_SIZE = 10
+const userPages = computed(() => Math.max(1, Math.ceil(userTotal.value / USER_PAGE_SIZE)))
 const userQuery = ref('')
 const userRole = ref('')
 const userStatus = ref('')
@@ -332,16 +347,32 @@ async function loadUsers(): Promise<void> {
       q: userQuery.value,
       role: userRole.value,
       status: userStatus.value,
-      limit: 100,
+      limit: USER_PAGE_SIZE,
+      offset: (userPage.value - 1) * USER_PAGE_SIZE,
     })
     if (requestId !== usersRequestId) return
     users.value = result.items
     userTotal.value = result.total
+    if (!result.items.length && userPage.value > 1) {
+      userPage.value = Math.min(userPage.value - 1, userPages.value)
+      await loadUsers()
+    }
   } catch (err) {
     if (requestId === usersRequestId) errorByTab.users = describeError(err)
   } finally {
     if (requestId === usersRequestId) loadingByTab.users = false
   }
+}
+
+function searchUsers(): void {
+  userPage.value = 1
+  void loadUsers()
+}
+
+function goUserPage(page: number): void {
+  if (page < 1 || page > userPages.value || page === userPage.value) return
+  userPage.value = page
+  void loadUsers()
 }
 
 function openUserCreate(): void {
@@ -393,6 +424,7 @@ async function resetPassword(user: AdminUser): Promise<void> {
     const temporary = await resetAdminPassword(user.id)
     tempPassword.value = temporary
     flash(`已重置「${user.username}」的密码`)
+    await loadUsers()
   } catch (err) {
     errorByTab.users = describeError(err)
   }
@@ -575,6 +607,7 @@ onMounted(() => {
           <thead>
             <tr>
               <th>名称</th>
+              <th>类型</th>
               <th>列表地址</th>
               <th>分类</th>
               <th>地区</th>
@@ -587,7 +620,12 @@ onMounted(() => {
           <tbody>
             <tr v-for="site in sites" :key="site.name">
               <td>{{ site.name }}</td>
-              <td class="ellipsis" :title="site.list_url">{{ site.list_url }}</td>
+              <td>
+                <span class="badge">{{ site.has_api ? '接口采集' : '列表抓取' }}</span>
+              </td>
+              <td class="ellipsis" :title="site.list_url">
+                {{ site.has_api ? '由接口配置维护' : site.list_url }}
+              </td>
               <td>{{ site.category || '—' }}</td>
               <td>{{ site.region || '—' }}</td>
               <td>{{ site.timezone }}</td>
@@ -614,7 +652,7 @@ onMounted(() => {
               </td>
             </tr>
             <tr v-if="!sites.length">
-              <td colspan="8" class="empty">暂无站点</td>
+              <td colspan="9" class="empty">暂无站点</td>
             </tr>
           </tbody>
         </table>
@@ -640,7 +678,7 @@ onMounted(() => {
           <option value="active">启用</option>
           <option value="disabled">禁用</option>
         </select>
-        <button class="btn" type="button" @click="loadUsers">查询</button>
+        <button class="btn" type="button" @click="searchUsers">查询</button>
         <button class="btn btn--primary" type="button" @click="openUserCreate">新增账号</button>
         <span class="muted">共 {{ userTotal }} 个账号</span>
       </div>
@@ -711,6 +749,28 @@ onMounted(() => {
             </tr>
           </tbody>
         </table>
+      </div>
+
+      <div class="pager">
+        <button
+          class="btn"
+          type="button"
+          :disabled="userPage <= 1"
+          @click="goUserPage(userPage - 1)"
+        >
+          上一页
+        </button>
+        <span class="muted"
+          >第 {{ userPage }} / {{ userPages }} 页 · 共 {{ userTotal }} 个账号</span
+        >
+        <button
+          class="btn"
+          type="button"
+          :disabled="userPage >= userPages"
+          @click="goUserPage(userPage + 1)"
+        >
+          下一页
+        </button>
       </div>
     </div>
 
@@ -783,8 +843,13 @@ onMounted(() => {
           ><span>名称</span
           ><input v-model="siteForm.name" class="input" :disabled="editingSiteName !== null"
         /></label>
+        <p v-if="editingSiteHasApi" class="notice" role="status">
+          接口型站点的抓取地址与 XPath
+          由爬虫接口配置维护，此处只能修改分类、地区、时区、渲染与启停。
+        </p>
         <label class="field"
-          ><span>列表地址</span><input v-model="siteForm.list_url" class="input"
+          ><span>列表地址</span
+          ><input v-model="siteForm.list_url" class="input" :disabled="editingSiteHasApi"
         /></label>
         <label class="field"
           ><span>分类</span
@@ -797,16 +862,20 @@ onMounted(() => {
           ><span>时区</span><input v-model="siteForm.timezone" class="input"
         /></label>
         <label class="field"
-          ><span>列表项 XPath</span><input v-model="siteForm.item_xpath" class="input"
+          ><span>列表项 XPath</span
+          ><input v-model="siteForm.item_xpath" class="input" :disabled="editingSiteHasApi"
         /></label>
         <label class="field"
-          ><span>标题 XPath</span><input v-model="siteForm.title_xpath" class="input"
+          ><span>标题 XPath</span
+          ><input v-model="siteForm.title_xpath" class="input" :disabled="editingSiteHasApi"
         /></label>
         <label class="field"
-          ><span>链接 XPath</span><input v-model="siteForm.url_xpath" class="input"
+          ><span>链接 XPath</span
+          ><input v-model="siteForm.url_xpath" class="input" :disabled="editingSiteHasApi"
         /></label>
         <label class="field"
-          ><span>日期 XPath（可选）</span><input v-model="siteForm.date_xpath" class="input"
+          ><span>日期 XPath（可选）</span
+          ><input v-model="siteForm.date_xpath" class="input" :disabled="editingSiteHasApi"
         /></label>
         <label class="check"
           ><input v-model="siteForm.render" type="checkbox" /><span

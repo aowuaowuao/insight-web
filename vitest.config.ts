@@ -30,6 +30,8 @@ export default defineConfig({
         'src/stores/**/*.ts',
         'src/api/**/*.ts',
         'src/components/**/*.vue',
+        // HomeView 为纯展示页，纳入覆盖率；AdminView 依赖 ECharts 画布，交互由 Playwright 全链路覆盖
+        'src/views/HomeView.vue',
       ],
       exclude: ['src/**/*.d.ts'],
       // 规范要求核心逻辑覆盖率不低于 80%

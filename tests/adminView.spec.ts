@@ -166,6 +166,45 @@ describe('AdminView Tab 状态隔离', () => {
     expect(patch).not.toHaveProperty('name')
   })
 
+  it('接口型站点可编辑非接口字段，且不提交空的列表地址', async () => {
+    adminApi.listAdminSites.mockResolvedValue([
+      {
+        name: 'shpolicy_ssme',
+        list_url: '',
+        category: 'funding_subsidy',
+        region: '上海',
+        timezone: 'Asia/Shanghai',
+        render: false,
+        enabled: true,
+        item_xpath: '',
+        title_xpath: '',
+        url_xpath: '',
+        date_xpath: '',
+        has_api: true,
+      },
+    ])
+    adminApi.updateAdminSite.mockResolvedValue({ name: 'shpolicy_ssme' })
+    const wrapper = await mountAdmin()
+
+    await clickTab(wrapper, 1)
+    await wrapper
+      .findAll('.btn--text')
+      .find((node) => node.text() === '编辑')!
+      .trigger('click')
+    expect(wrapper.text()).toContain('由接口配置维护')
+    await wrapper.findAll('.modal .btn--primary')[0].trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('.modal').exists()).toBe(false)
+    expect(adminApi.updateAdminSite).toHaveBeenCalledWith(
+      'shpolicy_ssme',
+      expect.objectContaining({ category: 'funding_subsidy', enabled: true }),
+    )
+    const patch = adminApi.updateAdminSite.mock.calls[0][1] as Record<string, unknown>
+    expect(patch).not.toHaveProperty('list_url')
+    expect(patch).not.toHaveProperty('item_xpath')
+  })
+
   it('站点列表的迟到响应不覆盖后发请求的结果', async () => {
     const pending = deferred<unknown[]>()
     adminApi.listAdminSites.mockReturnValueOnce(pending.promise).mockResolvedValueOnce([])

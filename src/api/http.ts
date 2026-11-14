@@ -33,8 +33,8 @@ const RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504])
 
 /**
  * 请求头注入钩子（请求拦截）。
- * 登录接入真实后端后，在这里塞 Authorization，调用点一处都不用改。
- * 现在返回空对象，因为当前登录是纯前端演示。
+ * 登录后由 stores/auth.ts 写入 Token，这里统一注入 Authorization，调用点一处都不用改。
+ * 未登录（如登录页本身）返回空对象。
  */
 function authHeaders(): Record<string, string> {
   const token = readAuthToken()
