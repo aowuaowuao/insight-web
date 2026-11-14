@@ -59,12 +59,7 @@ const loadingByTab = reactive<Record<TabKey, boolean>>({
 })
 const errorByTab = reactive<Record<TabKey, string>>({ stats: '', sites: '', users: '', logs: '' })
 const loading = computed(() => loadingByTab[activeTab.value])
-const error = computed({
-  get: () => errorByTab[activeTab.value],
-  set: (value: string) => {
-    errorByTab[activeTab.value] = value
-  },
-})
+const error = computed(() => errorByTab[activeTab.value])
 const message = ref('')
 let messageTimer: ReturnType<typeof setTimeout> | null = null
 function flash(text: string): void {
@@ -217,15 +212,19 @@ const siteForm = ref<AdminSiteInput>({
   enabled: true,
 })
 
+let sitesRequestId = 0
+
 async function loadSites(): Promise<void> {
+  const requestId = ++sitesRequestId
   loadingByTab.sites = true
   errorByTab.sites = ''
   try {
-    sites.value = await listAdminSites()
+    const next = await listAdminSites()
+    if (requestId === sitesRequestId) sites.value = next
   } catch (err) {
-    errorByTab.sites = describeError(err)
+    if (requestId === sitesRequestId) errorByTab.sites = describeError(err)
   } finally {
-    loadingByTab.sites = false
+    if (requestId === sitesRequestId) loadingByTab.sites = false
   }
 }
 
@@ -257,7 +256,7 @@ function openSiteEdit(site: AdminSite): void {
 
 async function submitSite(): Promise<void> {
   if (!siteForm.value.name.trim() || !siteForm.value.list_url.trim()) {
-    error.value = '站点名称与列表地址不能为空'
+    errorByTab.sites = '站点名称与列表地址不能为空'
     return
   }
   try {
@@ -271,7 +270,7 @@ async function submitSite(): Promise<void> {
     siteModalOpen.value = false
     await loadSites()
   } catch (err) {
-    error.value = describeError(err)
+    errorByTab.sites = describeError(err)
   }
 }
 
@@ -282,7 +281,7 @@ async function removeSite(site: AdminSite): Promise<void> {
     flash('站点已删除')
     await loadSites()
   } catch (err) {
-    error.value = describeError(err)
+    errorByTab.sites = describeError(err)
   }
 }
 
@@ -291,7 +290,7 @@ async function toggleSite(site: AdminSite): Promise<void> {
     await updateAdminSite(site.id, { enabled: !site.enabled })
     await loadSites()
   } catch (err) {
-    error.value = describeError(err)
+    errorByTab.sites = describeError(err)
   }
 }
 
@@ -311,7 +310,10 @@ const userForm = ref({
 })
 const tempPassword = ref('')
 
+let usersRequestId = 0
+
 async function loadUsers(): Promise<void> {
+  const requestId = ++usersRequestId
   loadingByTab.users = true
   errorByTab.users = ''
   try {
@@ -321,12 +323,13 @@ async function loadUsers(): Promise<void> {
       status: userStatus.value,
       limit: 100,
     })
+    if (requestId !== usersRequestId) return
     users.value = result.items
     userTotal.value = result.total
   } catch (err) {
-    errorByTab.users = describeError(err)
+    if (requestId === usersRequestId) errorByTab.users = describeError(err)
   } finally {
-    loadingByTab.users = false
+    if (requestId === usersRequestId) loadingByTab.users = false
   }
 }
 
@@ -338,7 +341,7 @@ function openUserCreate(): void {
 
 async function submitUser(): Promise<void> {
   if (!userForm.value.username.trim()) {
-    error.value = '用户名不能为空'
+    errorByTab.users = '用户名不能为空'
     return
   }
   try {
@@ -353,7 +356,7 @@ async function submitUser(): Promise<void> {
     flash(tempPassword.value ? '账号已创建，请把临时密码交给用户' : '账号已创建')
     await loadUsers()
   } catch (err) {
-    error.value = describeError(err)
+    errorByTab.users = describeError(err)
   }
 }
 
@@ -366,7 +369,7 @@ async function patchUser(
     flash('账号已更新')
     await loadUsers()
   } catch (err) {
-    error.value = describeError(err)
+    errorByTab.users = describeError(err)
   }
 }
 
@@ -377,7 +380,7 @@ async function resetPassword(user: AdminUser): Promise<void> {
     tempPassword.value = temporary
     flash(`已重置「${user.username}」的密码`)
   } catch (err) {
-    error.value = describeError(err)
+    errorByTab.users = describeError(err)
   }
 }
 
@@ -392,7 +395,10 @@ const logPage = ref(1)
 const LOG_PAGE_SIZE = 20
 const logPages = computed(() => Math.max(1, Math.ceil(logTotal.value / LOG_PAGE_SIZE)))
 
+let logsRequestId = 0
+
 async function loadLogs(): Promise<void> {
+  const requestId = ++logsRequestId
   loadingByTab.logs = true
   errorByTab.logs = ''
   try {
@@ -404,12 +410,13 @@ async function loadLogs(): Promise<void> {
       limit: LOG_PAGE_SIZE,
       offset: (logPage.value - 1) * LOG_PAGE_SIZE,
     })
+    if (requestId !== logsRequestId) return
     logs.value = result.items
     logTotal.value = result.total
   } catch (err) {
-    errorByTab.logs = describeError(err)
+    if (requestId === logsRequestId) errorByTab.logs = describeError(err)
   } finally {
-    loadingByTab.logs = false
+    if (requestId === logsRequestId) loadingByTab.logs = false
   }
 }
 
