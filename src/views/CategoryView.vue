@@ -3,8 +3,8 @@
  * 分类浏览页（技术规范书 2.2.1（二）模块三）。
  *
  * ── 后端缺口：前端不伪造，界面上显式标注 ──────────────────────────
- * 1. 「行业领域」：GET /v1/articles 没有任何行业领域字段，也没有跨类聚合查询。
- *    筛选器里只渲染一个 aria-disabled 的说明项，绝不做一个点了没反应的假筛选。
+ * 1. 「行业领域」：GET /v1/articles 支持 industry 单值过滤，候选来自 /v1/industries
+ *    （受控词表 + 每行业文章计数）。一次只能选一个行业，再点一次取消。
  * 2. 「相关度评分」：列表接口不返回检索相关度（/v1/search 才有 relevance.score）。
  *    卡片统一传 score=null；不拿 category_confidence（分类置信度）冒充相关度——
  *    两者量纲完全不同，冒充会让用户以为排序按相关度，实际按另一套分。
@@ -26,6 +26,7 @@ import ArticleCard from '@/components/ArticleCard.vue'
 import EmptyState from '@/components/EmptyState.vue'
 import SkeletonList from '@/components/SkeletonList.vue'
 import { listArticles, type ArticleListItem, type ArticleSort } from '@/api/articles'
+import { listIndustries, type IndustryStat } from '@/api/industries'
 import { listSources, type SourceStat } from '@/api/sources'
 import { useLatestRequest } from '@/composables/useLatestRequest'
 import { CATEGORY_ORDER, categoryName } from '@/constants/categories'
@@ -98,9 +99,13 @@ const loadedOnce = ref(false)
 
 const sources = ref<SourceStat[]>([])
 const sourcesError = ref('')
+const industries = ref<IndustryStat[]>([])
+const industriesError = ref('')
 
 const selectedCategory = ref('')
 const selectedSources = ref<string[]>([])
+/** /v1/articles 的 industry 是单值参数，所以这里也用单选 */
+const selectedIndustry = ref('')
 const timeRange = ref<TimeRange>('all')
 const customFrom = ref('')
 const customTo = ref('')
@@ -141,13 +146,19 @@ const filterSummary = computed(() => {
   if (selectedSources.value.length) {
     parts.push('发布单位 ' + selectedSources.value.map((id) => sourceName(id)).join('、'))
   }
+  if (selectedIndustry.value) {
+    parts.push('行业 ' + industryName(selectedIndustry.value))
+  }
   return parts.join('，')
 })
 
 /** 排序不算筛选：重置筛选不动排序语义，只把「筛选条件」清掉 */
 const hasFilters = computed(
   () =>
-    selectedCategory.value !== '' || timeRange.value !== 'all' || selectedSources.value.length > 0,
+    selectedCategory.value !== '' ||
+    timeRange.value !== 'all' ||
+    selectedSources.value.length > 0 ||
+    selectedIndustry.value !== '',
 )
 
 const statusText = computed(() => {
@@ -180,6 +191,7 @@ interface PageState {
   from: string
   to: string
   sources: string[]
+  industry: string
   sort: ArticleSort
   page: number
   pageSize: number
@@ -246,6 +258,7 @@ function stateFromRoute(): PageState {
     from: range === 'all' ? '' : resolved.from,
     to: range === 'all' ? '' : resolved.to,
     sources: normalizeList(route.query.source),
+    industry: typeof route.query.industry === 'string' ? route.query.industry.trim() : '',
     sort: isArticleSort(sortRaw) ? sortRaw : 'published_desc',
     page: positiveInt(route.query.page, 1),
     pageSize: PAGE_SIZE_OPTIONS.includes(sizeRaw) ? sizeRaw : DEFAULT_PAGE_SIZE,
@@ -260,6 +273,7 @@ function currentState(): PageState {
     from: timeRange.value === 'all' ? '' : range.from,
     to: timeRange.value === 'all' ? '' : range.to,
     sources: selectedSources.value,
+    industry: selectedIndustry.value,
     sort: sort.value,
     page: page.value,
     pageSize: pageSize.value,
@@ -288,6 +302,7 @@ function queryOf(state: PageState): LocationQueryRaw {
   if (state.from) query.from = state.from
   if (state.to) query.to = state.to
   if (state.sources.length) query.source = state.sources
+  if (state.industry) query.industry = state.industry
   if (state.sort !== 'published_desc') query.sort = state.sort
   if (state.page > 1) query.page = String(state.page)
   if (state.pageSize !== DEFAULT_PAGE_SIZE) query.size = String(state.pageSize)
@@ -305,6 +320,7 @@ function requestKeyOf(state: PageState): string {
     state.from,
     state.to,
     state.sources,
+    state.industry,
     state.sort,
     state.page,
     state.pageSize,
@@ -356,6 +372,7 @@ async function run(): Promise<void> {
     const result = await listArticles({
       category: selectedCategory.value || undefined,
       sources: selectedSources.value,
+      industry: selectedIndustry.value || undefined,
       publishedFrom: scoped ? range.from || undefined : undefined,
       publishedTo: scoped ? range.to || undefined : undefined,
       sort: sort.value,
@@ -400,6 +417,7 @@ function applyFromRoute(): void {
   appliedSignature = signature
   selectedCategory.value = state.category
   selectedSources.value = state.sources
+  selectedIndustry.value = state.industry
   timeRange.value = state.range
   // 快捷范围（7d/30d）的日期是按今天现算的，留着上一次的输入值只会在切到自定义时误导
   customFrom.value = state.range === 'custom' ? state.from : ''
@@ -449,6 +467,17 @@ function toggleSource(id: string): void {
   apply()
 }
 
+/** 行业单选：再点已选中的行业即取消 */
+function toggleIndustry(id: string): void {
+  selectedIndustry.value = selectedIndustry.value === id ? '' : id
+  page.value = 1
+  apply()
+}
+
+function industryName(id: string): string {
+  return industries.value.find((item) => item.id === id)?.name || id
+}
+
 function setSort(value: ArticleSort): void {
   if (sort.value === value) return
   sort.value = value
@@ -460,6 +489,7 @@ function setSort(value: ArticleSort): void {
 function resetFilters(): void {
   selectedCategory.value = ''
   selectedSources.value = []
+  selectedIndustry.value = ''
   timeRange.value = 'all'
   customFrom.value = ''
   customTo.value = ''
@@ -491,11 +521,21 @@ async function loadSources(): Promise<void> {
   }
 }
 
+/** 行业候选取自受控词表；失败同样只少一组筛选项 */
+async function loadIndustries(): Promise<void> {
+  try {
+    industries.value = await listIndustries()
+  } catch {
+    industriesError.value = '行业领域加载失败，其他筛选不受影响'
+  }
+}
+
 watch(() => route.fullPath, applyFromRoute)
 
 onMounted(() => {
   void applyFromRoute()
   void loadSources()
+  void loadIndustries()
 })
 </script>
 
@@ -504,8 +544,9 @@ onMounted(() => {
     <header class="page-head">
       <h1>分类浏览</h1>
       <p class="page-head__desc">
-        用顶部标签页切换「政策类 / 项目申报类 / 资金奖补类 / 全部」，再叠加时间范围与发布单位筛选；
-        人才申报、企业资质申报、其他 三类可在「大类」里直接选。
+        用顶部标签页切换「政策类 / 项目申报类 / 资金奖补类 /
+        全部」，再叠加时间范围、发布单位与行业领域筛选； 人才申报、企业资质申报、其他
+        三类可在「大类」里直接选。
       </p>
     </header>
 
@@ -609,10 +650,22 @@ onMounted(() => {
       <div class="adv-row">
         <span class="adv-row__label">行业领域</span>
         <div class="adv-row__body">
-          <!-- 后端无该字段：禁用而非隐藏，让用户知道是「还没有」而不是「没有这个筛选」 -->
-          <button class="chip" type="button" disabled aria-disabled="true">
-            行业领域筛选待后端提供字段（当前后端无该维度）
+          <button
+            v-for="item in industries"
+            :key="item.id"
+            class="chip"
+            :class="{ 'chip--active': selectedIndustry === item.id }"
+            type="button"
+            :aria-pressed="selectedIndustry === item.id"
+            :title="item.description"
+            @click="toggleIndustry(item.id)"
+          >
+            {{ item.name }}
+            <span class="chip__count num">{{ item.article_count }}</span>
           </button>
+          <span v-if="!industries.length" class="adv-hint">
+            {{ industriesError || '暂无可选行业' }}
+          </span>
         </div>
       </div>
 
@@ -682,6 +735,8 @@ onMounted(() => {
             :source="item.source"
             :published-at="item.published_at"
             :category="item.category"
+            :industry="item.industry"
+            :industry-name="item.industry ? industryName(item.industry) : ''"
             :score="null"
           />
         </div>

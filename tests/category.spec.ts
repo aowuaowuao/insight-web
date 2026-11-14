@@ -13,9 +13,11 @@ import type { ArticleListItem, ArticleListPage } from '@/api/articles'
 
 vi.mock('@/api/articles', () => ({ listArticles: vi.fn() }))
 vi.mock('@/api/sources', () => ({ listSources: vi.fn() }))
+vi.mock('@/api/industries', () => ({ listIndustries: vi.fn() }))
 
 const { listArticles } = await import('@/api/articles')
 const { listSources } = await import('@/api/sources')
+const { listIndustries } = await import('@/api/industries')
 const CategoryView = (await import('@/views/CategoryView.vue')).default
 
 const Blank = { template: '<div />' }
@@ -43,6 +45,9 @@ function makeItem(id: string, overrides: Partial<ArticleListItem> = {}): Article
     category: 'industry_policy',
     category_confidence: 0.81,
     category_engine: 'llm',
+    industry: 'next_gen_it',
+    industry_confidence: 0.8,
+    industry_engine: 'llm',
     tag_engine: 'llm',
     extract_engine: 'gne',
     analyzed_at: '2026-11-01 10:00:00',
@@ -86,8 +91,10 @@ function buttonByText(wrapper: Awaited<ReturnType<typeof mountPage>>['wrapper'],
 beforeEach(() => {
   vi.mocked(listArticles).mockReset()
   vi.mocked(listSources).mockReset()
+  vi.mocked(listIndustries).mockReset()
   vi.mocked(listArticles).mockResolvedValue(makePage([makeItem('a1')]))
   vi.mocked(listSources).mockResolvedValue([])
+  vi.mocked(listIndustries).mockResolvedValue([])
 })
 
 describe('分类 Tab', () => {
@@ -179,13 +186,26 @@ describe('二级筛选叠加', () => {
     expect(lastOptions().sources).toEqual(['ndrc_tz'])
   })
 
-  it('行业领域是禁用说明项，不参与查询参数', async () => {
+  it('行业领域单选：选中落到 industry 参数，再点一次取消', async () => {
+    vi.mocked(listIndustries).mockResolvedValue([
+      {
+        id: 'next_gen_it',
+        name: '新一代信息技术',
+        description: '集成电路、人工智能',
+        keywords: ['人工智能'],
+        article_count: 112,
+      },
+    ])
     const { wrapper } = await mountPage()
-    const field = buttonByText(wrapper, '行业领域筛选待后端提供字段')
-    expect(field).toBeTruthy()
-    expect(field!.attributes('disabled')).toBeDefined()
-    expect(field!.attributes('aria-disabled')).toBe('true')
-    expect(JSON.stringify(lastOptions())).not.toContain('industry')
+    await flushPromises()
+
+    await buttonByText(wrapper, '新一代信息技术')!.trigger('click')
+    await flushPromises()
+    expect(lastOptions().industry).toBe('next_gen_it')
+
+    await buttonByText(wrapper, '新一代信息技术')!.trigger('click')
+    await flushPromises()
+    expect(lastOptions().industry).toBeUndefined()
   })
 
   it('自定义时间范围倒置时不发请求并给出提示', async () => {

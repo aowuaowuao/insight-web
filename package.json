@@ -20,6 +20,8 @@
     "prepare": "husky"
   },
   "dependencies": {
+    "echarts": "^5.6.0",
+    "markdown-it": "^14.3.3",
     "pinia": "^3.0.0",
     "vue": "^3.5.45",
     "vue-router": "^4.5.0"
@@ -28,6 +30,7 @@
     "@commitlint/cli": "^20.1.0",
     "@commitlint/config-conventional": "^20.0.0",
     "@eslint/js": "^10.0.1",
+    "@types/markdown-it": "^14.2.0",
     "@types/node": "^26.6.6",
     "@vitejs/plugin-vue": "^6.0.11",
     "@vitest/coverage-v8": "^5.1.0",

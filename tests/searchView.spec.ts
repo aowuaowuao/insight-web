@@ -21,6 +21,7 @@ import type { SearchItem, SearchPayload } from '@/api/search'
 vi.mock('@/api/search', () => ({ searchArticles: vi.fn() }))
 vi.mock('@/api/articles', () => ({ listArticles: vi.fn() }))
 vi.mock('@/api/sources', () => ({ listSources: vi.fn() }))
+vi.mock('@/api/industries', () => ({ listIndustries: vi.fn() }))
 vi.mock('@/api/tags', () => ({
   listTags: vi.fn(),
   tagName: (defs: { id: string; name: string }[], id: string) =>
@@ -30,6 +31,7 @@ vi.mock('@/api/tags', () => ({
 const { searchArticles } = await import('@/api/search')
 const { listArticles } = await import('@/api/articles')
 const { listSources } = await import('@/api/sources')
+const { listIndustries } = await import('@/api/industries')
 const { listTags } = await import('@/api/tags')
 const SearchView = (await import('@/views/SearchView.vue')).default
 
@@ -57,6 +59,8 @@ function makeItem(id: string, score = 0.9): SearchItem {
     content_length: 1200,
     category: 'project_application',
     category_confidence: 0.9,
+    industry: 'next_gen_it',
+    industry_confidence: 0.8,
     tags: [],
     relevance: {
       score,
@@ -109,6 +113,7 @@ beforeEach(() => {
   vi.mocked(searchArticles).mockReset()
   vi.mocked(listArticles).mockReset()
   vi.mocked(listSources).mockReset()
+  vi.mocked(listIndustries).mockReset()
   vi.mocked(listTags).mockReset()
   vi.mocked(searchArticles).mockResolvedValue(makePayload([makeItem('a1')]))
   vi.mocked(listArticles).mockResolvedValue({
@@ -120,6 +125,7 @@ beforeEach(() => {
     undatedExcluded: 0,
   })
   vi.mocked(listSources).mockResolvedValue([])
+  vi.mocked(listIndustries).mockResolvedValue([])
   vi.mocked(listTags).mockResolvedValue([])
 })
 

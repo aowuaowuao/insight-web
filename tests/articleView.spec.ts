@@ -16,7 +16,13 @@ const getChecklist = vi.fn()
 const generateChecklist = vi.fn()
 const listArticles = vi.fn()
 const listTags = vi.fn()
+const addFavorite = vi.fn()
+const removeFavorite = vi.fn()
 
+vi.mock('@/api/account', () => ({
+  addFavorite: (...args: unknown[]) => addFavorite(...args),
+  removeFavorite: (...args: unknown[]) => removeFavorite(...args),
+}))
 vi.mock('@/api/article', () => ({
   getArticle: (...args: unknown[]) => getArticle(...args),
   getChecklist: (...args: unknown[]) => getChecklist(...args),
@@ -108,6 +114,8 @@ beforeEach(() => {
   generateChecklist.mockReset()
   listArticles.mockReset()
   listTags.mockReset()
+  addFavorite.mockReset()
+  removeFavorite.mockReset()
   listTags.mockResolvedValue([])
   getChecklist.mockResolvedValue(null)
   listArticles.mockResolvedValue({
@@ -170,6 +178,49 @@ describe('ArticleView 关键要素', () => {
     expect(wrapper.find('.field__value').text()).toContain('2026-12-31')
     expect(wrapper.find('.field__value').text()).toContain('待核验')
     expect(wrapper.find('.field__empty').exists()).toBe(false)
+  })
+})
+
+describe('ArticleView 正文与收藏', () => {
+  it('优先渲染后端清洗后的 body_html，并生成目录锚点', async () => {
+    getArticle.mockResolvedValue(
+      detail({
+        body_html:
+          '<h2>申报条件</h2><p>第一段。</p><h3>材料要求</h3><table><tr><td>营业执照</td></tr></table>',
+      }),
+    )
+    const wrapper = await mountView()
+    const body = wrapper.find('.body--rich')
+    expect(body.find('h2').text()).toBe('申报条件')
+    expect(body.find('table').text()).toContain('营业执照')
+    expect(wrapper.findAll('.toc__item').map((node) => node.text())).toEqual([
+      '申报条件',
+      '材料要求',
+    ])
+    expect(body.find('h2').attributes('id')).toBe('section-1')
+  })
+
+  it('后端没有 body_html 时用 MarkdownIt 渲染纯文本并转义 HTML', async () => {
+    getArticle.mockResolvedValue(detail({ body: '第一行<script>alert(1)</script>\n第二行' }))
+    const wrapper = await mountView()
+    const body = wrapper.find('.body--rich')
+    expect(body.text()).toContain('第一行')
+    expect(body.find('script').exists()).toBe(false)
+    expect(body.html()).toContain('&lt;script&gt;')
+  })
+
+  it('收藏按钮调用真实接口并反映 is_favorite 初始态', async () => {
+    getArticle.mockResolvedValue(detail({ is_favorite: true }))
+    const wrapper = await mountView()
+    const button = wrapper.find('.head__actions .btn')
+    expect(button.text()).toContain('已收藏')
+
+    removeFavorite.mockResolvedValue(undefined)
+    await button.trigger('click')
+    await flushPromises()
+    expect(removeFavorite).toHaveBeenCalledWith('a1')
+    expect(button.text()).toContain('收藏')
+    expect(button.text()).not.toContain('已收藏')
   })
 })
 

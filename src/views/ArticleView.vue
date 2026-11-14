@@ -6,17 +6,22 @@
  * 标签、正文全文、原文跳转、收藏。
  *
  * 数据来自 news-insight：
- * - GET /v1/articles/{id}            详情 + 标签 + 结构化抽取
+ * - GET /v1/articles/{id}            详情 + 标签 + 结构化抽取 + body_html/is_favorite
  * - GET /v1/articles/{id}/checklist  申报清单（无清单时 404 → null）
- * 收藏与浏览历史存 localStorage（后端暂无收藏接口），结构见 ProfileView 的 StoredArticle。
+ * - POST/DELETE /v1/me/favorites     收藏（浏览历史由后端在详情请求时自动记录）
+ *
+ * 正文安全：body_html 由 news-crawler 的 html_sanitize 白名单过滤后才落库，
+ * 前端只渲染该字段；缺失时用 MarkdownIt（html:false）把纯文本转义后渲染。
+ * 目录由渲染后的 h2/h3 动态提取，不依赖服务端注入 id。
  *
  * 规范缺口（后端暂未提供对应能力，界面按「能取到的就展示、取不到就明说」处理）：
- * - 浏览量、正文 HTML（后端 body 是纯文本）、目录跳转：接口没有，正文按段落渲染。
+ * - 浏览量：接口没有，不展示。
  * - 「相关推荐 3-5 条」：调 /v1/articles?category=X 排除自身取 5 条同分类最新公告，
  *   属同分类近似，不是相似度推荐（后端没有相似度接口）。取不到时整块不渲染。
  */
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
+import MarkdownIt from 'markdown-it'
 import EmptyState from '@/components/EmptyState.vue'
 import ArticleCard from '@/components/ArticleCard.vue'
 import ScoreBadge from '@/components/ScoreBadge.vue'
@@ -29,21 +34,13 @@ import {
   type ArticleDetail,
 } from '@/api/article'
 import { listArticles, type ArticleListItem } from '@/api/articles'
+import { addFavorite, removeFavorite } from '@/api/account'
 import { listTags, tagName, type TagDef } from '@/api/tags'
 import { categoryName } from '@/constants/categories'
 import { sourceName } from '@/constants/sources'
 import { formatDateTime, formatNumber, scoreToPercent } from '@/utils/format'
-import { readJson, writeJson } from '@/utils/storage'
-import { STORAGE_KEYS } from '@/utils/storageKeys'
 
-interface StoredArticle {
-  article_id: string
-  title: string
-  source: string
-  category: string | null
-  published_at: string | null
-  at: number
-}
+const md = new MarkdownIt({ html: false, linkify: true, breaks: true })
 
 /** 抽取字段的展示顺序与中文名；后端新增字段没登记时按 key 原样展示，不会丢信息 */
 const FIELD_LABELS: Record<string, string> = {
@@ -66,18 +63,46 @@ const tagDefs = ref<TagDef[]>([])
 const loading = ref(true)
 const error = ref('')
 const favorited = ref(false)
+const favoriteLoading = ref(false)
+const favoriteError = ref('')
+const bodyRef = ref<HTMLElement | null>(null)
+const toc = ref<{ id: string; text: string; level: number }[]>([])
 
 /** 详情页的请求序号：路由快速切换时防止旧响应覆盖新文章 */
 let loadRequestId = 0
 /** 清单请求序号：生成成功会作废更早的 GET，切换文章也会作废在途的生成请求 */
 let checklistRequestId = 0
 
-const paragraphs = computed(() =>
-  (article.value?.body ?? '')
-    .split(/\n+/)
-    .map((line) => line.trim())
-    .filter(Boolean),
-)
+/** 优先渲染后端清洗过的 body_html；缺失时把纯文本按 Markdown（禁 HTML）转义渲染 */
+const bodyHtml = computed(() => {
+  const raw = article.value?.body_html?.trim()
+  if (raw) return raw
+  return md.render(article.value?.body ?? '')
+})
+
+/** 目录跳转：渲染后从正文 h2/h3 提取标题并补锚点，不依赖服务端 id */
+async function buildToc(): Promise<void> {
+  await nextTick()
+  const root = bodyRef.value
+  if (!root) {
+    toc.value = []
+    return
+  }
+  const headings = Array.from(root.querySelectorAll<HTMLElement>('h2, h3'))
+  toc.value = headings.map((heading, index) => {
+    const id = `section-${index + 1}`
+    heading.id = id
+    return {
+      id,
+      text: heading.textContent?.trim() || `第 ${index + 1} 节`,
+      level: heading.tagName === 'H2' ? 2 : 3,
+    }
+  })
+}
+
+function jumpToSection(id: string): void {
+  document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
 
 /**
  * 关键要素。
@@ -142,42 +167,25 @@ function tagPercent(confidence: number): number {
   return scoreToPercent(confidence) ?? 0
 }
 
-function favoriteEntry(item: ArticleDetail): StoredArticle {
-  return {
-    article_id: item.article_id,
-    title: item.title,
-    source: item.source,
-    category: item.category,
-    published_at: item.published_at,
-    at: Date.now(),
-  }
-}
-
-function loadFavorited(): void {
-  const stored = readJson<StoredArticle[]>(STORAGE_KEYS.FAVORITES, [])
-  favorited.value = stored.some((item) => item.article_id === route.params.id)
-}
-
-function toggleFavorite(): void {
+/** 收藏走后端 /v1/me/favorites；浏览历史由详情接口在登录态自动记录 */
+async function toggleFavorite(): Promise<void> {
   const item = article.value
-  if (!item) return
-  const stored = readJson<StoredArticle[]>(STORAGE_KEYS.FAVORITES, [])
-  const exists = stored.some((row) => row.article_id === item.article_id)
-  const next = exists
-    ? stored.filter((row) => row.article_id !== item.article_id)
-    : [favoriteEntry(item), ...stored]
-  writeJson(STORAGE_KEYS.FAVORITES, next)
-  favorited.value = !exists
-}
-
-/** 浏览历史：同一篇只保留最近一次，最多 50 条 */
-function rememberVisit(item: ArticleDetail): void {
-  const stored = readJson<StoredArticle[]>(STORAGE_KEYS.VIEW_HISTORY, [])
-  const next = [
-    favoriteEntry(item),
-    ...stored.filter((row) => row.article_id !== item.article_id),
-  ].slice(0, 50)
-  writeJson(STORAGE_KEYS.VIEW_HISTORY, next)
+  if (!item || favoriteLoading.value) return
+  const targetId = item.article_id
+  const next = !favorited.value
+  favoriteLoading.value = true
+  favoriteError.value = ''
+  try {
+    if (next) await addFavorite(targetId)
+    else await removeFavorite(targetId)
+    if (article.value?.article_id === targetId) favorited.value = next
+  } catch (err) {
+    if (article.value?.article_id === targetId) {
+      favoriteError.value = err instanceof Error ? err.message : '收藏操作失败'
+    }
+  } finally {
+    if (article.value?.article_id === targetId) favoriteLoading.value = false
+  }
 }
 
 /**
@@ -283,6 +291,8 @@ async function load(id: string): Promise<void> {
   article.value = null
   checklist.value = null
   related.value = []
+  favorited.value = false
+  toc.value = []
   checklistOpen.value = false
   checklistError.value = ''
   checklistLoading.value = false
@@ -290,8 +300,9 @@ async function load(id: string): Promise<void> {
     const detail = await getArticle(id)
     if (requestId !== loadRequestId) return
     article.value = detail
-    rememberVisit(detail)
-    loadFavorited()
+    favorited.value = Boolean(detail.is_favorite)
+    favoriteError.value = ''
+    void buildToc()
     // 词表与清单是次要信息：失败只影响对应区块，不把整页打回错误态
     void listTags()
       .then((defs) => {
@@ -374,6 +385,7 @@ watch(
             :class="favorited ? 'btn--primary' : 'btn--ghost'"
             type="button"
             :aria-pressed="favorited"
+            :disabled="favoriteLoading"
             @click="toggleFavorite"
           >
             <svg viewBox="0 0 16 16" aria-hidden="true" class="btn__icon">
@@ -385,12 +397,13 @@ watch(
                 stroke-linejoin="round"
               />
             </svg>
-            {{ favorited ? '已收藏' : '收藏' }}
+            {{ favoriteLoading ? '处理中…' : favorited ? '已收藏' : '收藏' }}
           </button>
           <a class="btn btn--ghost" :href="article.url" target="_blank" rel="noopener noreferrer">
             查看原文 ↗
           </a>
         </div>
+        <p v-if="favoriteError" class="card__error" role="alert">{{ favoriteError }}</p>
       </header>
 
       <section v-if="fields.length" class="card">
@@ -483,12 +496,25 @@ watch(
 
       <section class="card">
         <h2 class="card__title">正文</h2>
-        <article class="body">
-          <p v-for="(paragraph, index) in paragraphs" :key="index">{{ paragraph }}</p>
-          <p v-if="!paragraphs.length" class="body__empty">
-            这篇公告没有落库正文，请点右上角「查看原文」。
-          </p>
-        </article>
+        <nav v-if="toc.length > 1" class="toc" aria-label="正文目录">
+          <span class="toc__label">目录</span>
+          <button
+            v-for="item in toc"
+            :key="item.id"
+            class="toc__item"
+            :class="{ 'toc__item--sub': item.level === 3 }"
+            type="button"
+            @click="jumpToSection(item.id)"
+          >
+            {{ item.text }}
+          </button>
+        </nav>
+        <!-- body_html 已由后端白名单清洗；纯文本回退经 MarkdownIt(html:false) 转义 -->
+        <!-- eslint-disable-next-line vue/no-v-html -- 内容来自 news-crawler html_sanitize 白名单，非用户输入 -->
+        <article ref="bodyRef" class="body body--rich" v-html="bodyHtml"></article>
+        <p v-if="!bodyHtml.trim()" class="body__empty">
+          这篇公告没有落库正文，请点右上角「查看原文」。
+        </p>
       </section>
 
       <!-- 规范模块四（6）：底部相关公告 3-5 条。后端只有大类，所以是同分类近似 -->
@@ -880,6 +906,121 @@ watch(
 
 .body__empty {
   color: var(--color-text-muted);
+}
+
+/* 正文富文本：后端白名单只保留语义标签，样式全部由这里控制 */
+.body--rich :deep(h1),
+.body--rich :deep(h2),
+.body--rich :deep(h3) {
+  margin: var(--space-5) 0 var(--space-2);
+  font-size: var(--font-size-h2);
+  line-height: var(--line-height-heading);
+  color: var(--color-text);
+  scroll-margin-top: var(--space-6);
+}
+
+.body--rich :deep(h3) {
+  font-size: var(--font-size-h3);
+}
+
+.body--rich :deep(p) {
+  margin: 0 0 var(--space-3);
+}
+
+.body--rich :deep(img) {
+  max-width: 100%;
+  height: auto;
+  border-radius: var(--radius-base);
+}
+
+.body--rich :deep(table) {
+  width: 100%;
+  margin: var(--space-3) 0;
+  border-collapse: collapse;
+  font-size: var(--font-size-sm);
+}
+
+.body--rich :deep(th),
+.body--rich :deep(td) {
+  padding: var(--space-2);
+  border: 1px solid var(--color-border);
+  text-align: left;
+  vertical-align: top;
+}
+
+.body--rich :deep(th) {
+  background: var(--color-bg-layout);
+  font-weight: 600;
+}
+
+.body--rich :deep(pre) {
+  margin: var(--space-3) 0;
+  padding: var(--space-3);
+  overflow-x: auto;
+  background: #1f1f1f;
+  border-radius: var(--radius-card);
+  color: #f5f5f5;
+  font-size: var(--font-size-sm);
+  line-height: 1.6;
+}
+
+.body--rich :deep(code) {
+  padding: 1px 4px;
+  background: var(--color-bg-layout);
+  border-radius: var(--radius-base);
+  font-family: monospace;
+  font-size: 0.92em;
+}
+
+.body--rich :deep(pre code) {
+  padding: 0;
+  background: transparent;
+  color: inherit;
+}
+
+.body--rich :deep(blockquote) {
+  margin: var(--space-3) 0;
+  padding: var(--space-2) var(--space-4);
+  border-left: 3px solid var(--color-primary);
+  background: var(--color-primary-bg);
+  color: var(--color-text-secondary);
+}
+
+.body--rich :deep(a) {
+  color: var(--color-primary);
+}
+
+.toc {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-4);
+  padding: var(--space-3);
+  background: var(--color-bg-layout);
+  border-radius: var(--radius-card);
+}
+
+.toc__label {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+}
+
+.toc__item {
+  padding: 2px 8px;
+  border: 0;
+  background: transparent;
+  color: var(--color-primary);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+}
+
+.toc__item:hover {
+  text-decoration: underline;
+}
+
+.toc__item--sub {
+  color: var(--color-text-secondary);
 }
 
 /* ── 同分类公告 ───────────────────────────────── */

@@ -2,43 +2,42 @@
 /**
  * 个人中心。
  * 对照规范 2.2.1（二）模块六：
- * （1）个人信息区：头像、姓名、部门、账号创建时间
- * （2）我的收藏：Tab 切换，展示收藏列表，支持取消收藏与批量操作
- * （3）浏览历史：Tab 切换，按时间倒序，支持清空历史
- * （4）个性化设置：关注领域多选、消息推送开关、推送时间偏好，保存后即时生效
- * （5）修改密码：需验证原密码，新密码满足复杂度（大小写+数字+特殊字符，≥8 位）
- *
- * ⚠️ 收藏/历史/设置当前存在浏览器 localStorage（后端暂无对应接口），
- * 属于前端可独立交付的部分；接口就绪后把 utils 的读写换成 api 调用即可。
+ * （1）个人信息区：头像、姓名、部门、账号创建时间（来自 /v1/auth/me）
+ * （2）我的收藏：展示 /v1/me/favorites，支持取消收藏与批量操作
+ * （3）浏览历史：/v1/me/history，按时间倒序，支持清空
+ * （4）个性化设置：关注领域、消息推送开关、推送时间偏好，保存到 /v1/me/preferences
+ * （5）修改密码：验证原密码，新密码满足大小写+数字+特殊字符且 ≥8 位（后端 /v1/auth/password）
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import { categoryName } from '@/constants/categories'
 import { formatDateTime, formatRelativeTime } from '@/utils/format'
-import { readJson, removeKey, writeJson } from '@/utils/storage'
-import { STORAGE_KEYS } from '@/utils/storageKeys'
 import EmptyState from '@/components/EmptyState.vue'
+import { HttpError } from '@/api/http'
+import {
+  clearHistory as clearHistoryApi,
+  getPreferences,
+  listFavorites,
+  listHistory,
+  removeFavorite,
+  savePreferences as savePreferencesApi,
+  type FavoriteItem,
+  type HistoryItem,
+  type Preferences as ApiPreferences,
+} from '@/api/account'
+import { changePassword } from '@/api/auth'
 
 const auth = useAuthStore()
-
-/** 收藏与历史的最小结构：只存渲染需要的字段，正文不进来 */
-interface StoredArticle {
-  article_id: string
-  title: string
-  source: string
-  category: string | null
-  published_at: string | null
-  /** 收藏/浏览时间戳 */
-  at: number
-}
 
 type TabKey = 'favorites' | 'history' | 'settings' | 'password'
 
 const activeTab = ref<TabKey>('favorites')
 
-const favorites = ref<StoredArticle[]>([])
-const history = ref<StoredArticle[]>([])
+const favorites = ref<FavoriteItem[]>([])
+const history = ref<HistoryItem[]>([])
 const selectedIds = ref<string[]>([])
+const loading = ref(false)
+const loadError = ref('')
 
 const notify = ref('')
 let notifyTimer: ReturnType<typeof setTimeout> | null = null
@@ -56,21 +55,53 @@ onBeforeUnmount(() => {
   if (notifyTimer !== null) clearTimeout(notifyTimer)
 })
 
-function loadStored(): void {
-  favorites.value = readJson<StoredArticle[]>(STORAGE_KEYS.FAVORITES, [])
-  history.value = readJson<StoredArticle[]>(STORAGE_KEYS.VIEW_HISTORY, [])
+function describeError(error: unknown): string {
+  return error instanceof HttpError
+    ? error.message
+    : error instanceof Error
+      ? error.message
+      : '请求失败'
 }
 
-onMounted(loadStored)
+async function loadFavorites(): Promise<void> {
+  loading.value = true
+  loadError.value = ''
+  try {
+    const result = await listFavorites()
+    favorites.value = result.items
+  } catch (error) {
+    loadError.value = describeError(error)
+  } finally {
+    loading.value = false
+  }
+}
 
-// ── 个人信息 ───────────────────────────────────────────
-/** 账号创建时间：首次登录时写入，演示阶段退化为“本次访问” */
-const createdAt = computed(() => {
-  const raw = readJson<{ createdAt?: number }>(STORAGE_KEYS.PREFERENCES, {})
-  return raw.createdAt ? formatDateTime(new Date(raw.createdAt).toISOString()) : '—'
+async function loadHistory(): Promise<void> {
+  loading.value = true
+  loadError.value = ''
+  try {
+    const result = await listHistory()
+    history.value = result.items
+  } catch (error) {
+    loadError.value = describeError(error)
+  } finally {
+    loading.value = false
+  }
+}
+
+onMounted(() => {
+  void loadFavorites()
+  void loadHistory()
 })
 
-const avatarText = computed(() => (auth.username ? auth.username.charAt(0).toUpperCase() : '?'))
+// ── 个人信息 ───────────────────────────────────────────
+const createdAt = computed(() =>
+  auth.user?.created_at ? formatDateTime(auth.user.created_at) : '—',
+)
+const department = computed(() => auth.user?.department || '—')
+const avatarText = computed(() =>
+  auth.displayName ? auth.displayName.charAt(0).toUpperCase() : '?',
+)
 
 // ── 收藏 ───────────────────────────────────────────────
 const allSelected = computed(
@@ -87,28 +118,37 @@ function toggleSelectAll(): void {
   selectedIds.value = allSelected.value ? [] : favorites.value.map((item) => item.article_id)
 }
 
-function removeFavorites(ids: string[]): void {
-  const set = new Set(ids)
-  favorites.value = favorites.value.filter((item) => !set.has(item.article_id))
-  selectedIds.value = selectedIds.value.filter((id) => !set.has(id))
-  writeJson(STORAGE_KEYS.FAVORITES, favorites.value)
-  flash(`已取消收藏 ${ids.length} 条`)
+async function removeFavorites(ids: string[]): Promise<void> {
+  if (ids.length === 0) return
+  const results = await Promise.allSettled(ids.map((id) => removeFavorite(id)))
+  const removed = new Set(ids.filter((_, index) => results[index]?.status === 'fulfilled'))
+  if (removed.size === 0) {
+    flash('取消收藏失败，请稍后重试')
+    return
+  }
+  favorites.value = favorites.value.filter((item) => !removed.has(item.article_id))
+  selectedIds.value = selectedIds.value.filter((id) => !removed.has(id))
+  flash(`已取消收藏 ${removed.size} 条${removed.size < ids.length ? '（部分失败）' : ''}`)
 }
 
 function removeOne(id: string): void {
-  removeFavorites([id])
+  void removeFavorites([id])
 }
 
 function removeSelected(): void {
   if (selectedIds.value.length === 0) return
-  removeFavorites([...selectedIds.value])
+  void removeFavorites([...selectedIds.value])
 }
 
 // ── 浏览历史 ───────────────────────────────────────────
-function clearHistory(): void {
-  history.value = []
-  removeKey(STORAGE_KEYS.VIEW_HISTORY)
-  flash('浏览历史已清空')
+async function clearHistory(): Promise<void> {
+  try {
+    await clearHistoryApi()
+    history.value = []
+    flash('浏览历史已清空')
+  } catch (error) {
+    flash(`清空失败：${describeError(error)}`)
+  }
 }
 
 // ── 个性化设置 ─────────────────────────────────────────
@@ -122,31 +162,38 @@ const FIELD_OPTIONS = [
   'other',
 ] as const
 
-interface Preferences {
+interface PreferencesForm {
   fields: string[]
   notifyEnabled: boolean
-  /** 推送时间偏好，HH:mm */
   notifyTime: string
-  createdAt?: number
 }
 
-const preferences = ref<Preferences>({
+const preferences = ref<PreferencesForm>({
   fields: [],
   notifyEnabled: true,
   notifyTime: '09:00',
 })
 
+function applyPreferences(payload: ApiPreferences): void {
+  preferences.value = {
+    fields: Array.isArray(payload.industries) ? [...payload.industries] : [],
+    notifyEnabled: payload.push_enabled !== false,
+    notifyTime: payload.digest_time || '09:00',
+  }
+}
+
+async function loadPreferences(): Promise<void> {
+  try {
+    applyPreferences(await getPreferences())
+  } catch (error) {
+    flash(`读取设置失败：${describeError(error)}`)
+  }
+}
+
 watch(
   activeTab,
-  () => {
-    if (activeTab.value !== 'settings') return
-    const stored = readJson<Partial<Preferences>>(STORAGE_KEYS.PREFERENCES, {})
-    preferences.value = {
-      fields: Array.isArray(stored.fields) ? stored.fields : [],
-      notifyEnabled: stored.notifyEnabled !== false,
-      notifyTime: typeof stored.notifyTime === 'string' ? stored.notifyTime : '09:00',
-      createdAt: stored.createdAt,
-    }
+  (key) => {
+    if (key === 'settings') void loadPreferences()
   },
   { immediate: true },
 )
@@ -157,14 +204,18 @@ function toggleField(id: string): void {
   else preferences.value.fields.push(id)
 }
 
-function savePreferences(): void {
-  const stored = readJson<Partial<Preferences>>(STORAGE_KEYS.PREFERENCES, {})
-  const ok = writeJson(STORAGE_KEYS.PREFERENCES, {
-    ...stored,
-    ...preferences.value,
-    createdAt: stored.createdAt ?? Date.now(),
-  })
-  flash(ok ? '设置已保存，已即时生效' : '保存失败：浏览器存储不可用（隐私模式？）')
+async function savePreferences(): Promise<void> {
+  try {
+    const saved = await savePreferencesApi({
+      industries: [...preferences.value.fields],
+      push_enabled: preferences.value.notifyEnabled,
+      digest_time: preferences.value.notifyTime,
+    })
+    applyPreferences(saved)
+    flash('设置已保存，已即时生效')
+  } catch (error) {
+    flash(`保存失败：${describeError(error)}`)
+  }
 }
 
 // ── 修改密码 ───────────────────────────────────────────
@@ -172,6 +223,7 @@ const oldPassword = ref('')
 const newPassword = ref('')
 const confirmPassword = ref('')
 const passwordError = ref('')
+const passwordSubmitting = ref(false)
 
 /** 规范：新密码需满足 大小写 + 数字 + 特殊字符，≥8 位 */
 function passwordChecks(value: string): { label: string; ok: boolean }[] {
@@ -187,13 +239,12 @@ function passwordChecks(value: string): { label: string; ok: boolean }[] {
 const passwordCheckList = computed(() => passwordChecks(newPassword.value))
 const passwordValid = computed(() => passwordCheckList.value.every((item) => item.ok))
 
-function submitPassword(): void {
+async function submitPassword(): Promise<void> {
   passwordError.value = ''
   if (!oldPassword.value) {
     passwordError.value = '请输入原密码'
     return
   }
-  // 演示账号的密码校验需要走后端；当前实现只做前端规则校验，并明确告知用户
   if (!passwordValid.value) {
     passwordError.value = '新密码不符合复杂度要求'
     return
@@ -202,10 +253,18 @@ function submitPassword(): void {
     passwordError.value = '两次输入的新密码不一致'
     return
   }
-  passwordError.value = '演示环境不提供真实改密：接入后端后此处调用 /v1/users/password'
-  oldPassword.value = ''
-  newPassword.value = ''
-  confirmPassword.value = ''
+  passwordSubmitting.value = true
+  try {
+    await changePassword({ old_password: oldPassword.value, new_password: newPassword.value })
+    oldPassword.value = ''
+    newPassword.value = ''
+    confirmPassword.value = ''
+    flash('密码修改成功，其他设备的登录已失效')
+  } catch (error) {
+    passwordError.value = describeError(error)
+  } finally {
+    passwordSubmitting.value = false
+  }
 }
 
 const TABS: { key: TabKey; label: string }[] = [
@@ -228,11 +287,11 @@ const TABS: { key: TabKey; label: string }[] = [
       <dl class="profile__fields">
         <div class="profile__field">
           <dt>姓名</dt>
-          <dd>{{ auth.username || '—' }}</dd>
+          <dd>{{ auth.displayName || '—' }}</dd>
         </div>
         <div class="profile__field">
           <dt>部门</dt>
-          <dd>—</dd>
+          <dd>{{ department }}</dd>
         </div>
         <div class="profile__field">
           <dt>账号创建时间</dt>
@@ -264,6 +323,10 @@ const TABS: { key: TabKey; label: string }[] = [
     </div>
 
     <p v-if="notify" class="profile__notify" role="status">{{ notify }}</p>
+    <p v-if="loadError" class="profile__notify profile__notify--error" role="alert">
+      {{ loadError }}
+    </p>
+    <p v-if="loading" class="panel__hint">加载中…</p>
 
     <!-- 我的收藏 -->
     <div v-if="activeTab === 'favorites'" class="panel">
@@ -296,7 +359,7 @@ const TABS: { key: TabKey; label: string }[] = [
             <span class="list__tag">{{ categoryName(item.category ?? '') }}</span>
             <span class="list__title">{{ item.title }}</span>
             <span class="list__meta">
-              {{ item.source }} · 收藏于 {{ formatRelativeTime(new Date(item.at).toISOString()) }}
+              {{ item.source }} · 收藏于 {{ formatRelativeTime(item.favorited_at) }}
             </span>
           </RouterLink>
           <button class="btn btn--text" type="button" @click="removeOne(item.article_id)">
@@ -326,7 +389,7 @@ const TABS: { key: TabKey; label: string }[] = [
             <span class="list__tag">{{ categoryName(item.category ?? '') }}</span>
             <span class="list__title">{{ item.title }}</span>
             <span class="list__meta">
-              {{ item.source }} · {{ formatRelativeTime(new Date(item.at).toISOString()) }}
+              {{ item.source }} · {{ formatRelativeTime(item.viewed_at) }}
             </span>
           </RouterLink>
         </li>
@@ -413,7 +476,14 @@ const TABS: { key: TabKey; label: string }[] = [
 
         <p v-if="passwordError" class="form__error" role="alert">{{ passwordError }}</p>
 
-        <button class="btn btn--primary" type="button" @click="submitPassword">提交修改</button>
+        <button
+          class="btn btn--primary"
+          type="button"
+          :disabled="passwordSubmitting"
+          @click="submitPassword"
+        >
+          {{ passwordSubmitting ? '提交中…' : '提交修改' }}
+        </button>
       </div>
     </div>
   </section>
@@ -529,6 +599,11 @@ const TABS: { key: TabKey; label: string }[] = [
   background: var(--color-success-bg);
   color: var(--color-success);
   font-size: var(--font-size-sm);
+}
+
+.profile__notify--error {
+  background: var(--color-error-bg);
+  color: var(--color-error);
 }
 
 .panel {

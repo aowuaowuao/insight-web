@@ -50,8 +50,12 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '个人中心' },
   },
   {
-    // 管理员专属功能页依赖后端接口（站点管理 / 账号管理 / 统计看板 / 操作日志），
-    // 接口就绪后在此挂载，并用 meta.roles: ['admin'] 控制访问。
+    path: '/admin',
+    name: 'admin',
+    component: () => import('@/views/AdminView.vue'),
+    meta: { title: '管理控制台', roles: ['admin'] },
+  },
+  {
     path: '/403',
     name: 'forbidden',
     component: () => import('@/views/ForbiddenView.vue'),

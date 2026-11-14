@@ -24,7 +24,7 @@ import { formatRelativeTime } from '@/utils/format'
 const router = useRouter()
 const route = useRoute()
 const auth = useAuthStore()
-const { username } = storeToRefs(auth)
+const { displayName, isAdmin } = storeToRefs(auth)
 
 /** 侧边栏折叠状态（规范模块二（6）） */
 const collapsed = ref(false)
@@ -95,12 +95,16 @@ async function readAllNotifications(): Promise<void> {
   }
 }
 
-const menu = [
-  { to: '/', label: '首页', icon: 'home' },
-  { to: '/category', label: '分类浏览', icon: 'category' },
-  { to: '/search', label: '信息检索', icon: 'search' },
-  { to: '/profile', label: '个人中心', icon: 'user' },
-] as const
+const menu = computed(() => {
+  const items = [
+    { to: '/', label: '首页', icon: 'home' },
+    { to: '/category', label: '分类浏览', icon: 'category' },
+    { to: '/search', label: '信息检索', icon: 'search' },
+    { to: '/profile', label: '个人中心', icon: 'user' },
+  ]
+  if (isAdmin.value) items.push({ to: '/admin', label: '管理控制台', icon: 'admin' })
+  return items
+})
 
 /** 当前时间，每分钟刷新（规范模块二（1）要求顶部展示当前时间） */
 const now = ref(new Date())
@@ -130,11 +134,13 @@ const timeText = computed(() =>
   }),
 )
 
-const avatarText = computed(() => (username.value ? username.value.charAt(0).toUpperCase() : '?'))
+const avatarText = computed(() =>
+  displayName.value ? displayName.value.charAt(0).toUpperCase() : '?',
+)
 
-function handleLogout(): void {
+async function handleLogout(): Promise<void> {
   menuOpen.value = false
-  auth.logout()
+  await auth.logout()
   router.replace({ name: 'login' })
 }
 
@@ -265,13 +271,29 @@ const isActive = (to: string): boolean =>
                 stroke-linecap="round"
               />
             </svg>
-            <svg v-else viewBox="0 0 20 20" width="18" height="18">
+            <svg v-else-if="item.icon === 'user'" viewBox="0 0 20 20" width="18" height="18">
               <circle cx="10" cy="7" r="3.4" fill="none" stroke="currentColor" stroke-width="1.6" />
               <path
                 d="M4 17c0-3 2.7-5 6-5s6 2 6 5"
                 fill="none"
                 stroke="currentColor"
                 stroke-width="1.6"
+                stroke-linecap="round"
+              />
+            </svg>
+            <svg v-else viewBox="0 0 20 20" width="18" height="18">
+              <circle
+                cx="10"
+                cy="10"
+                r="2.6"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.6"
+              />
+              <path
+                d="M10 2.8v2M10 15.2v2M2.8 10h2M15.2 10h2M4.9 4.9l1.4 1.4M13.7 13.7l1.4 1.4M15.1 4.9l-1.4 1.4M6.3 13.7l-1.4 1.4"
+                stroke="currentColor"
+                stroke-width="1.4"
                 stroke-linecap="round"
               />
             </svg>
@@ -379,7 +401,7 @@ const isActive = (to: string): boolean =>
               @click="menuOpen = !menuOpen"
             >
               <span class="nav__avatar" aria-hidden="true">{{ avatarText }}</span>
-              <span class="nav__name">{{ username }}</span>
+              <span class="nav__name">{{ displayName }}</span>
               <span class="nav__caret" aria-hidden="true">▾</span>
             </button>
 

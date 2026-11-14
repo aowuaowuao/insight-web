@@ -41,6 +41,9 @@ export interface SearchItem {
   content_length: number
   category: string | null
   category_confidence: number | null
+  /** 受控行业 id（app/vocab/industries.json） */
+  industry: string | null
+  industry_confidence: number | null
   /** 后端返回的是对象数组，不是字符串数组（要标签名用 tags.map((t) => t.tag)） */
   tags: SearchTag[]
   relevance: SearchRelevance
@@ -92,6 +95,8 @@ export interface SearchOptions {
   categories?: string[]
   /** 只在这些来源（站点）里检索 */
   sources?: string[]
+  /** 只在这些受控行业里检索（空数组 = 不筛） */
+  industries?: string[]
   /** 发布日期下限 YYYY-MM-DD（含当天） */
   publishedFrom?: string
   /** 发布日期上限 YYYY-MM-DD（含当天） */
@@ -132,6 +137,9 @@ export async function searchArticles(
   }
   for (const source of options.sources ?? []) {
     qs.append('source', source)
+  }
+  for (const industry of options.industries ?? []) {
+    qs.append('industry', industry)
   }
 
   const res = await http.get<ApiEnvelope<SearchPayload>>(`/v1/search?${qs.toString()}`)

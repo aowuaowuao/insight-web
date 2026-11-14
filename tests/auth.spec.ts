@@ -1,98 +1,142 @@
 /**
- * 单元测试：src/stores/auth.ts
- * 重点覆盖规范模块一（4）（5）的要求：
- * 账号不存在 / 密码错误分别提示、连续 5 次失败锁定 15 分钟。
+ * 单元测试：src/stores/auth.ts（真实后端会话 Token）
+ * 覆盖规范模块一：必填校验、后端 401 剩余次数提示、423 锁定 15 分钟、
+ * Token/用户持久化、登出清会话、网络异常兜底。
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
+import { HttpError } from '@/api/http'
 import { LOCK_DURATION_MS, MAX_LOGIN_ATTEMPTS, useAuthStore } from '@/stores/auth'
 import { STORAGE_KEYS } from '@/utils/storageKeys'
+
+const loginMock = vi.fn()
+const logoutMock = vi.fn()
+const meMock = vi.fn()
+
+vi.mock('@/api/auth', () => ({
+  login: (...args: unknown[]) => loginMock(...args),
+  logout: (...args: unknown[]) => logoutMock(...args),
+  me: (...args: unknown[]) => meMock(...args),
+}))
+
+const USER = {
+  id: 1,
+  username: 'admin',
+  display_name: '管理员',
+  department: '信息化部',
+  role: 'admin',
+  status: 'active',
+  must_change_password: false,
+  last_login_at: '2026-11-14T00:00:00Z',
+  created_at: '2026-11-01T00:00:00Z',
+  updated_at: '2026-11-01T00:00:00Z',
+  is_admin: true,
+}
 
 describe('auth store', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     localStorage.clear()
+    loginMock.mockReset()
+    logoutMock.mockReset()
+    meMock.mockReset()
   })
 
-  it('参数为空时提示补全，不消耗失败次数', () => {
+  it('参数为空时提示补全，不调用后端', async () => {
     const auth = useAuthStore()
-    const result = auth.login('', '')
+    const result = await auth.login('', '')
     expect(result.ok).toBe(false)
     expect(result.reason).toBe('empty')
-    expect(auth.remainingAttempts).toBe(MAX_LOGIN_ATTEMPTS)
+    expect(loginMock).not.toHaveBeenCalled()
   })
 
-  it('账号不存在时给出专属文案', () => {
+  it('登录成功写入 Token 与用户资料', async () => {
+    loginMock.mockResolvedValue({
+      token: 'tok-123',
+      expires_at: '2026-11-21T00:00:00Z',
+      user: USER,
+    })
     const auth = useAuthStore()
-    const result = auth.login('nobody', '123456')
-    expect(result.ok).toBe(false)
-    expect(result.reason).toBe('not-found')
-    expect(result.message).toContain('账号不存在')
-  })
-
-  it('密码错误时给出专属文案并带上剩余次数', () => {
-    const auth = useAuthStore()
-    const result = auth.login('test', 'wrong-pass')
-    expect(result.reason).toBe('wrong-password')
-    expect(result.message).toContain('密码错误')
-    expect(result.message).toContain(String(MAX_LOGIN_ATTEMPTS - 1))
-  })
-
-  it('正确账号密码登录成功并记住用户名', () => {
-    const auth = useAuthStore()
-    const result = auth.login('test', '123456')
+    const result = await auth.login(' admin ', 'secret123')
     expect(result.ok).toBe(true)
+    expect(loginMock).toHaveBeenCalledWith('admin', 'secret123')
     expect(auth.isLoggedIn).toBe(true)
-    expect(auth.username).toBe('test')
-    expect(localStorage.getItem(STORAGE_KEYS.AUTH_USERNAME)).toBe('test')
+    expect(auth.isAdmin).toBe(true)
+    expect(auth.displayName).toBe('管理员')
+    expect(localStorage.getItem(STORAGE_KEYS.AUTH_TOKEN)).toBe('tok-123')
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.AUTH_USER) ?? '{}').username).toBe('admin')
   })
 
-  it('登录成功后失败计数清零', () => {
+  it('401 时展示后端剩余次数并累计失败次数', async () => {
+    loginMock.mockRejectedValue(new HttpError(401, '用户名或密码错误，还可尝试 3 次'))
     const auth = useAuthStore()
-    auth.login('test', 'bad1')
-    auth.login('test', 'bad2')
-    expect(auth.remainingAttempts).toBe(MAX_LOGIN_ATTEMPTS - 2)
-    expect(auth.login('test', '123456').ok).toBe(true)
-    expect(auth.remainingAttempts).toBe(MAX_LOGIN_ATTEMPTS)
-  })
-
-  it('连续 5 次失败后锁定，之后即使密码正确也拒绝', () => {
-    const auth = useAuthStore()
-    for (let i = 0; i < MAX_LOGIN_ATTEMPTS; i += 1) auth.login('test', 'bad')
-    expect(auth.isLocked).toBe(true)
-
-    const result = auth.login('test', '123456')
+    const result = await auth.login('admin', 'bad')
     expect(result.ok).toBe(false)
-    expect(result.reason).toBe('locked')
-    expect(result.message).toContain('15 分钟')
+    expect(result.reason).toBe('wrong-password')
+    expect(result.message).toContain('还可尝试 3 次')
+    expect(auth.remainingAttempts).toBe(MAX_LOGIN_ATTEMPTS - 2)
     expect(auth.isLoggedIn).toBe(false)
   })
 
-  it('锁定倒计时的剩余秒数在 0 与锁定时长之间', () => {
+  it('423 时进入 15 分钟锁定，锁定期内直接拒绝', async () => {
+    loginMock.mockRejectedValue(new HttpError(423, '连续 5 次密码错误，账号已锁定 15 分钟'))
     const auth = useAuthStore()
-    for (let i = 0; i < MAX_LOGIN_ATTEMPTS; i += 1) auth.login('test', 'bad')
-    expect(auth.lockRemainingSeconds).toBeGreaterThan(0)
-    expect(auth.lockRemainingSeconds).toBeLessThanOrEqual(LOCK_DURATION_MS / 1000)
+    const result = await auth.login('admin', 'bad')
+    expect(result.reason).toBe('locked')
+    expect(result.message).toContain('15 分钟')
+    expect(auth.isLocked).toBe(true)
+
+    const again = await auth.login('admin', 'secret123')
+    expect(again.ok).toBe(false)
+    expect(again.reason).toBe('locked')
+    expect(loginMock).toHaveBeenCalledTimes(1)
   })
 
-  it('锁定到期后自动解锁并恢复重试次数', () => {
+  it('锁定倒计时到期后恢复可登录', async () => {
     vi.useFakeTimers()
+    loginMock.mockRejectedValue(new HttpError(423, '连续 5 次密码错误，账号已锁定 15 分钟'))
     const auth = useAuthStore()
-    for (let i = 0; i < MAX_LOGIN_ATTEMPTS; i += 1) auth.login('test', 'bad')
+    await auth.login('admin', 'bad')
     expect(auth.isLocked).toBe(true)
+    expect(auth.lockRemainingSeconds).toBeGreaterThan(0)
+    expect(auth.lockRemainingSeconds).toBeLessThanOrEqual(LOCK_DURATION_MS / 1000)
 
     vi.advanceTimersByTime(LOCK_DURATION_MS + 1000)
     expect(auth.isLocked).toBe(false)
-
-    const result = auth.login('test', '123456')
-    expect(result.ok).toBe(true)
+    vi.useRealTimers()
   })
 
-  it('登出后清除用户名与登录态', () => {
+  it('网络异常单独归类，不消耗失败次数', async () => {
+    loginMock.mockRejectedValue(new Error('fetch failed'))
     const auth = useAuthStore()
-    auth.login('test', '123456')
-    auth.logout()
+    const result = await auth.login('admin', 'secret123')
+    expect(result.reason).toBe('network')
+    expect(auth.remainingAttempts).toBe(MAX_LOGIN_ATTEMPTS)
+  })
+
+  it('登出清除本地 Token 与用户', async () => {
+    loginMock.mockResolvedValue({ token: 'tok-123', expires_at: '', user: USER })
+    logoutMock.mockResolvedValue(undefined)
+    const auth = useAuthStore()
+    await auth.login('admin', 'secret123')
+    await auth.logout()
     expect(auth.isLoggedIn).toBe(false)
-    expect(localStorage.getItem(STORAGE_KEYS.AUTH_USERNAME)).toBeNull()
+    expect(localStorage.getItem(STORAGE_KEYS.AUTH_TOKEN)).toBeNull()
+    expect(localStorage.getItem(STORAGE_KEYS.AUTH_USER)).toBeNull()
+    expect(logoutMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('refreshProfile 更新用户资料，失败不登出', async () => {
+    loginMock.mockResolvedValue({ token: 'tok-123', expires_at: '', user: USER })
+    meMock.mockResolvedValue({ ...USER, display_name: '新名字' })
+    const auth = useAuthStore()
+    await auth.login('admin', 'secret123')
+    const updated = await auth.refreshProfile()
+    expect(updated?.display_name).toBe('新名字')
+    expect(auth.displayName).toBe('新名字')
+
+    meMock.mockRejectedValue(new Error('down'))
+    expect(await auth.refreshProfile()).toBeNull()
+    expect(auth.isLoggedIn).toBe(true)
   })
 })

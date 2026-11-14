@@ -21,6 +21,10 @@ const props = withDefaults(
     source: string
     publishedAt: string | null
     category?: string | null
+    /** 受控行业 id（仅用于语义，不直接展示） */
+    industry?: string | null
+    /** 行业显示名；来自 /v1/industries，由页面查好传入 */
+    industryName?: string | null
     /** 相关度（0-1）。不传则不显示评分 */
     score?: number | null
     /** 命中的关键词，用于标题高亮 */
@@ -32,6 +36,8 @@ const props = withDefaults(
   }>(),
   {
     category: null,
+    industry: null,
+    industryName: null,
     score: null,
     matchedTerms: () => [],
     highlights: () => [],
@@ -60,6 +66,7 @@ const emit = defineEmits<{
     >
       <div class="card__head">
         <span v-if="category" class="card__tag">{{ categoryName(category) }}</span>
+        <span v-if="industryName" class="card__tag card__tag--industry">{{ industryName }}</span>
         <span class="card__source">来源：{{ sourceName(source) }}</span>
         <span class="card__date">{{ formatDate(publishedAt) }}</span>
         <ScoreBadge v-if="percent !== null" :score="score ?? null" class="card__score" />
@@ -129,6 +136,11 @@ const emit = defineEmits<{
   background: var(--color-primary-bg);
   color: var(--color-primary);
   font-size: var(--font-size-xs);
+}
+
+.card__tag--industry {
+  background: var(--color-bg-layout);
+  color: var(--color-text-secondary);
 }
 
 .card__score {

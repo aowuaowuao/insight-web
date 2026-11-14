@@ -1,10 +1,13 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref } from 'vue'
-import { useRoute } from 'vue-router'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import AppNav from '@/components/AppNav.vue'
 import { onPendingChange } from '@/api/http'
+import { useAuthStore } from '@/stores/auth'
 
 const route = useRoute()
+const router = useRouter()
+const auth = useAuthStore()
 
 // 登录页不显示侧边栏与顶部导航（也不显示账户名）
 const showNav = computed(() => route.meta.hideNav !== true)
@@ -14,7 +17,24 @@ const pending = ref(0)
 const stopPending = onPendingChange((count) => {
   pending.value = count
 })
-onBeforeUnmount(stopPending)
+
+/** 任意接口返回 401 时统一清会话并回登录页，保留原目标便于登录后跳回 */
+function handleUnauthorized(): void {
+  auth.clearSession()
+  if (route.name !== 'login') {
+    void router.replace({ name: 'login', query: { redirect: route.fullPath } })
+  }
+}
+
+onMounted(() => {
+  window.addEventListener('insight:unauthorized', handleUnauthorized)
+  if (auth.isLoggedIn) void auth.refreshProfile()
+})
+
+onBeforeUnmount(() => {
+  stopPending()
+  window.removeEventListener('insight:unauthorized', handleUnauthorized)
+})
 </script>
 
 <template>

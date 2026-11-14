@@ -6,7 +6,7 @@
  * （共 X 条 / 用时 Y 毫秒）、每页条数 10/20/50 切换。
  *
  * 排序完全由后端决定（score = 0.7 标签 + 0.2 标题 + 0.1 正文），前端不再排序；
- * 时间范围与发布单位同样交给后端过滤。两处口径不同，别混：
+ * 时间范围、发布单位与行业领域同样交给后端过滤。两处口径不同，别混：
  * - 日期过滤按**卡片上显示的那一天**（站点墙钟 published_at 的日期前缀，后端 _DAY_EXPR）
  * - 排序按**真实时刻** published_at_utc（混时区站点才不会按墙钟排错）
  * 细节见 src/api/search.ts 的说明与 news-insight/app/db.py 的 _DAY_EXPR / _TIME_EXPR。
@@ -25,6 +25,7 @@ import EmptyState from '@/components/EmptyState.vue'
 import SkeletonList from '@/components/SkeletonList.vue'
 import { searchArticles, type SearchPayload, type SearchSort } from '@/api/search'
 import { listArticles } from '@/api/articles'
+import { listIndustries, type IndustryStat } from '@/api/industries'
 import { listSources, type SourceStat } from '@/api/sources'
 import { useLatestRequest } from '@/composables/useLatestRequest'
 import { CATEGORY_ORDER, categoryName } from '@/constants/categories'
@@ -40,6 +41,7 @@ interface CardItem {
   source: string
   published_at: string | null
   category: string | null
+  industry: string | null
   score: number | null
   matchedTerms: string[]
 }
@@ -83,6 +85,9 @@ const tags = ref<TagDef[]>([])
 /** 发布单位（站点）候选：来自后端 /v1/sources，不再维护前端静态清单 */
 const sources = ref<SourceStat[]>([])
 const selectedSources = ref<string[]>([])
+/** 受控行业候选（/v1/industries）；浏览模式的列表接口只接受单值 */
+const industries = ref<IndustryStat[]>([])
+const selectedIndustry = ref('')
 const payload = ref<SearchPayload | null>(null)
 const browseItems = ref<CardItem[]>([])
 const browseTotal = ref(0)
@@ -153,6 +158,7 @@ const allSearchItems = computed<CardItem[]>(() => {
       source: item.source,
       published_at: item.published_at,
       category: item.category,
+      industry: item.industry,
       score: item.relevance.score,
       matchedTerms: item.relevance.matched_terms,
     })),
@@ -194,6 +200,9 @@ const filterSummary = computed(() => {
   if (selectedSources.value.length) {
     parts.push('发布单位 ' + selectedSources.value.map((id) => sourceName(id)).join('、'))
   }
+  if (selectedIndustry.value) {
+    parts.push('行业 ' + industryName(selectedIndustry.value))
+  }
   if (selectedCategories.value.length) {
     parts.push('分类 ' + selectedCategories.value.map(categoryName).join('、'))
   }
@@ -205,6 +214,7 @@ const activeFilterCount = computed(() => {
   let count = selectedCategories.value.length
   if (timeRange.value !== 'all') count += 1
   count += selectedSources.value.length
+  if (selectedIndustry.value) count += 1
   // 浏览模式（无关键词）下这个开关是禁用的，URL 里带 high=1 也不该计进角标，
   // 否则出现「角标 1、但面板里没有任何可取消的项」
   if (highRelevanceOnly.value && submitted.value) count += 1
@@ -359,6 +369,7 @@ interface RouteState {
   q: string
   cats: string[]
   sources: string[]
+  industry: string
   from: string
   to: string
   sort: SearchSort
@@ -378,6 +389,7 @@ function stateFromRoute(): RouteState {
   const q = typeof route.query.q === 'string' ? route.query.q.trim() : ''
   const cats = normalizeCategories(route.query.category)
   const srcs = normalizeList(route.query.source)
+  const industryRaw = typeof route.query.industry === 'string' ? route.query.industry.trim() : ''
   const from = typeof route.query.from === 'string' ? route.query.from.trim() : ''
   const to = typeof route.query.to === 'string' ? route.query.to.trim() : ''
   const sortRaw = route.query.sort
@@ -389,6 +401,7 @@ function stateFromRoute(): RouteState {
     q,
     cats,
     sources: srcs,
+    industry: industryRaw,
     from,
     to,
     sort: nextSort,
@@ -421,6 +434,7 @@ function queryOf(state: RouteState): Record<string, string | string[] | undefine
     q: state.q === '' ? undefined : state.q,
     category: state.cats.length ? state.cats : undefined,
     source: state.sources.length ? state.sources : undefined,
+    industry: state.industry === '' ? undefined : state.industry,
     from: state.from === '' ? undefined : state.from,
     to: state.to === '' ? undefined : state.to,
     sort: state.sort === 'relevance' ? undefined : state.sort,
@@ -444,6 +458,7 @@ function currentState(): RouteState {
     q: submitted.value,
     cats: selectedCategories.value,
     sources: selectedSources.value,
+    industry: selectedIndustry.value,
     from: timeRange.value === 'all' ? '' : range.from,
     to: timeRange.value === 'all' ? '' : range.to,
     // 写进 URL 的是「实际生效的排序」：浏览模式下 relevance 会降级成最新发布，
@@ -478,6 +493,7 @@ async function run(): Promise<void> {
         perCategory: 100,
         categories: selectedCategories.value,
         sources: selectedSources.value,
+        industries: selectedIndustry.value ? [selectedIndustry.value] : [],
         publishedFrom: range.from || undefined,
         publishedTo: range.to || undefined,
         sort: sort.value,
@@ -496,6 +512,7 @@ async function run(): Promise<void> {
       const result = await listArticles({
         category: browseCategory.value,
         sources: selectedSources.value,
+        industry: selectedIndustry.value || undefined,
         publishedFrom: range.from || undefined,
         publishedTo: range.to || undefined,
         sort: effectiveBrowseSort.value,
@@ -509,6 +526,7 @@ async function run(): Promise<void> {
         source: item.source,
         published_at: item.published_at,
         category: item.category,
+        industry: item.industry,
         // 列表接口不返回相关度，分类置信度不冒充评分，这里不显示角标
         score: null,
         matchedTerms: [],
@@ -567,6 +585,7 @@ function applyFromRoute(): void {
         '」筛选；输入关键词后可多选大类检索。'
       : ''
   selectedSources.value = state.sources
+  selectedIndustry.value = state.industry
   sort.value = state.sort
   timeRange.value = state.range
   // 无关键词时「仅看高相关度」是禁用的（score 只有检索结果才有），URL 里残留的
@@ -651,6 +670,17 @@ function toggleSource(id: string): void {
   syncAndRun()
 }
 
+/** 行业单选：再次点击已选中的行业即取消 */
+function toggleIndustry(id: string): void {
+  selectedIndustry.value = selectedIndustry.value === id ? '' : id
+  page.value = 1
+  syncAndRun()
+}
+
+function industryName(id: string): string {
+  return industries.value.find((item) => item.id === id)?.name || id
+}
+
 function setTimeRange(value: TimeRange): void {
   const previous = timeRange.value
   timeRange.value = value
@@ -687,6 +717,7 @@ function onHighChange(): void {
 function resetFilters(): void {
   selectedCategories.value = []
   selectedSources.value = []
+  selectedIndustry.value = ''
   timeRange.value = 'all'
   customFrom.value = ''
   customTo.value = ''
@@ -766,6 +797,12 @@ onMounted(() => {
   void listSources()
     .then((list) => {
       sources.value = list
+    })
+    .catch(() => undefined)
+  // 行业候选来自受控词表；失败就不展示这一组筛选
+  void listIndustries()
+    .then((list) => {
+      industries.value = list
     })
     .catch(() => undefined)
 })
@@ -935,6 +972,26 @@ onMounted(() => {
       </div>
 
       <div class="adv-row">
+        <span class="adv-row__label">行业领域</span>
+        <div class="adv-row__body">
+          <button
+            v-for="item in industries"
+            :key="item.id"
+            class="chip"
+            :class="{ 'chip--active': selectedIndustry === item.id }"
+            type="button"
+            :aria-pressed="selectedIndustry === item.id"
+            :title="item.description"
+            @click="toggleIndustry(item.id)"
+          >
+            {{ item.name }}
+            <span class="chip__count">{{ item.article_count }}</span>
+          </button>
+          <span v-if="!industries.length" class="adv-hint">暂无可选行业</span>
+        </div>
+      </div>
+
+      <div class="adv-row">
         <span class="adv-row__label">排序方式</span>
         <div class="adv-row__body">
           <button
@@ -1038,6 +1095,8 @@ onMounted(() => {
           :source="card.source"
           :published-at="card.published_at"
           :category="card.category"
+          :industry="card.industry"
+          :industry-name="card.industry ? industryName(card.industry) : ''"
           :score="card.score"
           :matched-terms="card.matchedTerms"
         />

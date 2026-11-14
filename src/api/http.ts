@@ -110,7 +110,7 @@ async function readErrorDetail(response: Response): Promise<string> {
 function describeStatus(status: number, statusText: string, detail: string): string {
   const hint =
     status === 401
-      ? '后端开启了鉴权：请在 .env.development.local 配置 INSIGHT_API_KEY（由 Vite 代理注入 X-API-Key）'
+      ? '登录状态已失效，请重新登录'
       : status === 403
         ? '当前账号没有访问该资源的权限'
         : status === 404
@@ -148,7 +148,8 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
 
   // POST 不重试：后端的 /v1/analyze、/v1/jobs 都不是幂等的，超时后重发可能多跑一次分析、
   // 多花一次模型调用。读接口重试是安全的，写接口交给用户手动重试。
-  const retryBudget = (rest.method ?? 'GET').toUpperCase() === 'POST' ? 0 : retries
+  const method = (rest.method ?? 'GET').toUpperCase()
+  const retryBudget = method === 'GET' || method === 'HEAD' ? retries : 0
 
   if (trackLoading) {
     pendingCount += 1
@@ -189,7 +190,11 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
             continue
           }
           // 401 交给上层（路由守卫 / 登录页）处理跳转，这里不直接跳，
-          // 否则一个后台轮询接口失败就会把用户正在看的页面踹回登录页
+          // 否则一个后台轮询接口失败就会把用户正在看的页面踹回登录页。
+          // 但要把"登录已失效"广播出去，让 App 统一清会话并回登录页。
+          if (response.status === 401 && !path.endsWith('/auth/login')) {
+            window.dispatchEvent(new CustomEvent('insight:unauthorized'))
+          }
           throw error
         }
 
@@ -242,6 +247,8 @@ export const http = {
     request<T>(path, { ...options, method: 'POST', body }),
   put: <T>(path: string, body?: unknown, options?: RequestOptions) =>
     request<T>(path, { ...options, method: 'PUT', body }),
+  patch: <T>(path: string, body?: unknown, options?: RequestOptions) =>
+    request<T>(path, { ...options, method: 'PATCH', body }),
   delete: <T>(path: string, options?: RequestOptions) =>
     request<T>(path, { ...options, method: 'DELETE' }),
 }

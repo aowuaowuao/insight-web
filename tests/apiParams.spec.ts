@@ -27,6 +27,7 @@ describe('searchArticles', () => {
     expect(url.searchParams.has('sort')).toBe(false)
     expect(url.searchParams.has('published_from')).toBe(false)
     expect(url.searchParams.getAll('source')).toEqual([])
+    expect(url.searchParams.getAll('industry')).toEqual([])
   })
 
   it('时间、来源、排序都按后端参数名拼进查询串', async () => {
@@ -37,6 +38,7 @@ describe('searchArticles', () => {
       publishedTo: '2026-10-31',
       sort: 'published_desc',
       categories: ['project_application'],
+      industries: ['next_gen_it'],
     })
     const url = new URL(lastUrl(spy as never), 'http://localhost')
     expect(url.searchParams.getAll('source')).toEqual(['ctp_kjb', 'shpolicy_ssme'])
@@ -44,6 +46,7 @@ describe('searchArticles', () => {
     expect(url.searchParams.get('published_to')).toBe('2026-10-31')
     expect(url.searchParams.get('sort')).toBe('published_desc')
     expect(url.searchParams.getAll('category')).toEqual(['project_application'])
+    expect(url.searchParams.getAll('industry')).toEqual(['next_gen_it'])
   })
 
   it('空来源数组不产生 source 参数（不能退化成筛一个空站点）', async () => {
@@ -94,6 +97,7 @@ describe('listArticles', () => {
     const page = await listArticles({
       category: 'project_application',
       sources: ['ndrc_tz'],
+      industry: 'new_materials',
       publishedFrom: '2026-08-01',
       publishedTo: '2026-11-30',
       sort: 'published_asc',
@@ -103,6 +107,7 @@ describe('listArticles', () => {
     const url = new URL(lastUrl(spy as never), 'http://localhost')
     expect(url.searchParams.get('category')).toBe('project_application')
     expect(url.searchParams.getAll('source')).toEqual(['ndrc_tz'])
+    expect(url.searchParams.get('industry')).toBe('new_materials')
     expect(url.searchParams.get('published_from')).toBe('2026-08-01')
     expect(url.searchParams.get('published_to')).toBe('2026-11-30')
     expect(url.searchParams.get('sort')).toBe('published_asc')

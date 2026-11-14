@@ -88,9 +88,7 @@ async function handleSubmit(): Promise<void> {
 
   submitting.value = true
   try {
-    // 轻微延后，让按钮的 loading 状态能被看到（真实接口本身就有耗时，届时删掉）
-    await new Promise((resolve) => setTimeout(resolve, 120))
-    const result = auth.login(username.value, password.value)
+    const result = await auth.login(username.value, password.value)
     if (!result.ok) {
       formError.value = result.message
       if (result.reason === 'locked') startTimer()
@@ -212,7 +210,7 @@ function blurPassword(): void {
       </form>
 
       <p class="login__hint">
-        演示环境 · 测试账号 <code>test</code> / <code>123456</code>
+        请使用管理员分配的账号登录
         <span class="login__lock-note">
           （连续 {{ MAX_LOGIN_ATTEMPTS }} 次失败将锁定 {{ LOCK_DURATION_MS / 60000 }} 分钟）
         </span>

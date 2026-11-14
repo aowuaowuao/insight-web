@@ -13,6 +13,10 @@ export interface ArticleListItem {
   category: string | null
   category_confidence: number | null
   category_engine: string | null
+  /** 受控行业 id（app/vocab/industries.json），历史未分类行为空串 */
+  industry: string | null
+  industry_confidence: number | null
+  industry_engine: string | null
   tag_engine: string | null
   extract_engine: string | null
   analyzed_at: string
@@ -53,6 +57,8 @@ export interface ArticleListOptions {
   tag?: string
   /** 只在这些来源（站点）里筛选 */
   sources?: string[]
+  /** 只在这个受控行业里筛选（后端 /v1/articles 为单值参数） */
+  industry?: string
   /** 发布日期下限 YYYY-MM-DD（含当天） */
   publishedFrom?: string
   /** 发布日期上限 YYYY-MM-DD（含当天） */
@@ -72,6 +78,7 @@ export async function listArticles(options: ArticleListOptions = {}): Promise<Ar
   if (options.publishedFrom) params.set('published_from', options.publishedFrom)
   if (options.publishedTo) params.set('published_to', options.publishedTo)
   for (const source of options.sources ?? []) params.append('source', source)
+  if (options.industry) params.set('industry', options.industry)
   params.set('limit', String(options.limit ?? 20))
   params.set('offset', String(options.offset ?? 0))
 

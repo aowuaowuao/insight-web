@@ -43,7 +43,7 @@ describe('http 重试策略', () => {
 
     await expect(http.get('/v1/articles')).rejects.toMatchObject({ status: 401 })
     expect(fetchMock).toHaveBeenCalledTimes(1)
-    await expect(http.get('/v1/articles')).rejects.toThrow(/INSIGHT_API_KEY/)
+    await expect(http.get('/v1/articles')).rejects.toThrow(/登录状态已失效/)
   })
 
   it('GET 成功时解析 JSON，并在结束后把 loading 计数归零', async () => {

@@ -23,6 +23,10 @@ export interface ArticleDetail {
   published_at_utc: string | null
   content_length: number
   body: string | null
+  /** 清洗后的正文 HTML（后端白名单过滤），缺失时前端用 MarkdownIt 渲染纯文本回退 */
+  body_html?: string | null
+  /** 当前登录用户是否已收藏；未登录时为 false */
+  is_favorite?: boolean
   category: string | null
   category_confidence: number | null
   category_engine: string | null
