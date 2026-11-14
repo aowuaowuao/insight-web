@@ -1,0 +1,3 @@
+# 规范 2.2.1（四）4：提交时强制检查（Husky + lint-staged）
+# 只检查本次暂存的文件，全量检查太慢，会让人想用 --no-verify 跳过
+npx lint-staged

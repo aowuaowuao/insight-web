@@ -1,28 +1,4 @@
-:root {
-  --bg: #ffffff;
-  --fg: #1e293b;
-  --muted: #64748b;
-  --border: rgba(148, 163, 184, 0.25);
-
-  color-scheme: light dark;
-  font-family:
-    system-ui,
-    -apple-system,
-    'Segoe UI',
-    'Microsoft YaHei',
-    sans-serif;
-  line-height: 1.6;
-  -webkit-font-smoothing: antialiased;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #0f172a;
-    --fg: #e2e8f0;
-    --muted: #94a3b8;
-    --border: rgba(148, 163, 184, 0.2);
-  }
-}
+@import url('./tokens.css');
 
 * {
   box-sizing: border-box;
@@ -35,8 +11,12 @@ body {
 }
 
 body {
-  background: var(--bg);
-  color: var(--fg);
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-family-base);
+  font-size: var(--font-size-body);
+  line-height: var(--line-height-base);
+  -webkit-font-smoothing: antialiased;
 }
 
 #app {
@@ -46,17 +26,67 @@ body {
 h1,
 h2,
 h3 {
-  line-height: 1.3;
+  line-height: var(--line-height-heading);
   margin-top: 0;
+  color: var(--color-text);
+}
+
+h1 {
+  font-size: var(--font-size-h1);
+}
+
+h2 {
+  font-size: var(--font-size-h2);
+}
+
+h3 {
+  font-size: var(--font-size-h3);
 }
 
 code {
-  padding: 0.15em 0.4em;
-  border-radius: 4px;
-  background: rgba(148, 163, 184, 0.16);
-  font-size: 0.9em;
+  padding: 1px var(--space-1);
+  border-radius: var(--radius-base);
+  background: var(--color-bg-layout);
+  font-size: var(--font-size-xs);
 }
 
 a {
-  color: #3b82f6;
+  color: var(--color-primary);
+  transition: color var(--duration-base) var(--ease-out);
+}
+
+a:hover {
+  color: var(--color-primary-hover);
+}
+
+a:active {
+  color: var(--color-primary-active);
+}
+
+/* 数字统一用等宽族，表格与统计里对齐更整齐 */
+.num {
+  font-family: var(--font-family-number);
+}
+
+/* 视觉隐藏但保留给读屏器 */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

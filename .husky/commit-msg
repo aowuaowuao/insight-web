@@ -1,0 +1,2 @@
+# 规范 2.2.1（四）4：提交信息规范校验（Commitlint）
+npx --no -- commitlint --edit "$1"
