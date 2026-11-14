@@ -6,12 +6,20 @@
  * （6）侧边栏折叠/展开：折叠后仅显示图标，展开显示完整菜单文字
  * （7）全局搜索入口：顶部提供全局搜索框
  *
- * 消息通知（5）依赖后端接口，本轮不实现。
+ * 消息通知（5）：顶部铃铛展示未读角标，下拉查看新分析出的项目申报公告；
+ * 打开通知即标记已读，侧栏折叠不影响。数据来自 /v1/notifications。
  */
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import { useAuthStore } from '@/stores/auth'
+import {
+  listNotifications,
+  markAllNotificationsRead,
+  markNotificationRead,
+  type NotificationItem,
+} from '@/api/notifications'
+import { formatRelativeTime } from '@/utils/format'
 
 const router = useRouter()
 const route = useRoute()
@@ -24,6 +32,60 @@ const collapsed = ref(false)
 const menuOpen = ref(false)
 /** 全局搜索关键词 */
 const globalKeyword = ref('')
+
+/** 消息通知（规范模块二（5））：未读数 + 最近通知 */
+const bellOpen = ref(false)
+const bellLoading = ref(false)
+const notifications = ref<NotificationItem[]>([])
+const unreadCount = ref(0)
+let bellTimer: ReturnType<typeof setInterval> | null = null
+
+async function loadNotifications(): Promise<void> {
+  bellLoading.value = true
+  try {
+    const page = await listNotifications(10)
+    notifications.value = page.items
+    unreadCount.value = page.unread
+  } catch {
+    // 铃铛是辅助信息：后端短暂不可用时不打扰用户，保留上一次成功的数据
+  } finally {
+    bellLoading.value = false
+  }
+}
+
+onMounted(() => {
+  void loadNotifications()
+  bellTimer = setInterval(() => void loadNotifications(), 60_000)
+})
+
+async function toggleBell(): Promise<void> {
+  bellOpen.value = !bellOpen.value
+  if (bellOpen.value) await loadNotifications()
+}
+
+async function openNotification(item: NotificationItem): Promise<void> {
+  bellOpen.value = false
+  if (!item.read) {
+    try {
+      await markNotificationRead(item.id)
+      item.read = true
+      unreadCount.value = Math.max(0, unreadCount.value - 1)
+    } catch {
+      // 标记失败不阻断跳转：下次打开会重新拉取真实已读状态
+    }
+  }
+  await router.push({ name: 'article', params: { id: item.article_id } })
+}
+
+async function readAllNotifications(): Promise<void> {
+  try {
+    await markAllNotificationsRead()
+    notifications.value = notifications.value.map((item) => ({ ...item, read: true }))
+    unreadCount.value = 0
+  } catch {
+    // 失败保持原状，用户可重试
+  }
+}
 
 const menu = [
   { to: '/', label: '首页', icon: 'home' },
@@ -81,18 +143,25 @@ function submitGlobal(): void {
   globalKeyword.value = ''
 }
 
-/** 点到导航外部时收起下拉菜单 */
+/** 点到导航外部时收起下拉菜单与通知面板 */
 function onDocumentClick(event: MouseEvent): void {
   const target = event.target as HTMLElement | null
   if (!target?.closest('.nav__user')) menuOpen.value = false
+  if (!target?.closest('.nav__bell')) bellOpen.value = false
 }
 
-watch(menuOpen, (open) => {
+const anyPanelOpen = computed(() => menuOpen.value || bellOpen.value)
+
+watch(anyPanelOpen, (open) => {
   if (open) document.addEventListener('click', onDocumentClick)
   else document.removeEventListener('click', onDocumentClick)
 })
 
-onBeforeUnmount(() => document.removeEventListener('click', onDocumentClick))
+onBeforeUnmount(() => {
+  document.removeEventListener('click', onDocumentClick)
+  if (bellTimer !== null) clearInterval(bellTimer)
+  bellTimer = null
+})
 
 const isActive = (to: string): boolean =>
   to === '/' ? route.path === '/' : route.path === to || route.path.startsWith(to + '/')
@@ -238,6 +307,60 @@ const isActive = (to: string): boolean =>
 
         <div class="nav__right">
           <span class="nav__time num" :title="now.toISOString()">{{ timeText }}</span>
+
+          <div class="nav__bell">
+            <button
+              class="nav__bell-btn"
+              type="button"
+              aria-label="消息通知"
+              :aria-expanded="bellOpen"
+              aria-haspopup="dialog"
+              @click="toggleBell"
+            >
+              <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                <path
+                  d="M12 3a6 6 0 0 0-6 6v3.2l-1.4 2.4a1 1 0 0 0 .9 1.5h13a1 1 0 0 0 .9-1.5L18 12.2V9a6 6 0 0 0-6-6Zm0 18a2.5 2.5 0 0 0 2.4-2h-4.8A2.5 2.5 0 0 0 12 21Z"
+                  fill="currentColor"
+                />
+              </svg>
+              <span v-if="unreadCount > 0" class="nav__badge" aria-hidden="true">
+                {{ unreadCount > 99 ? '99+' : unreadCount }}
+              </span>
+              <span v-if="unreadCount > 0" class="visually-hidden">
+                有 {{ unreadCount }} 条未读通知
+              </span>
+            </button>
+
+            <div v-if="bellOpen" class="nav__bell-panel" role="dialog" aria-label="消息通知">
+              <div class="nav__bell-head">
+                <strong>消息通知</strong>
+                <button
+                  v-if="unreadCount > 0"
+                  class="nav__bell-readall"
+                  type="button"
+                  @click="readAllNotifications"
+                >
+                  全部已读
+                </button>
+              </div>
+              <p v-if="bellLoading" class="nav__bell-empty">加载中…</p>
+              <p v-else-if="notifications.length === 0" class="nav__bell-empty">暂无新消息</p>
+              <ul v-else class="nav__bell-list">
+                <li v-for="item in notifications" :key="item.id">
+                  <button
+                    class="nav__bell-item"
+                    :class="{ 'nav__bell-item--unread': !item.read }"
+                    type="button"
+                    @click="openNotification(item)"
+                  >
+                    <span class="nav__bell-title">{{ item.title }}</span>
+                    <span class="nav__bell-message">{{ item.message }}</span>
+                    <span class="nav__bell-time">{{ formatRelativeTime(item.created_at) }}</span>
+                  </button>
+                </li>
+              </ul>
+            </div>
+          </div>
 
           <div class="nav__user">
             <button
@@ -476,6 +599,140 @@ const isActive = (to: string): boolean =>
   color: var(--color-text-muted);
   font-size: var(--font-size-xs);
   white-space: nowrap;
+}
+
+.nav__bell {
+  position: relative;
+}
+
+.nav__bell-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-base);
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition:
+    background var(--duration-base) var(--ease-out),
+    color var(--duration-base) var(--ease-out);
+}
+
+.nav__bell-btn:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-primary);
+}
+
+.nav__badge {
+  position: absolute;
+  top: 1px;
+  right: 0;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: var(--radius-pill);
+  background: var(--color-error);
+  color: var(--color-text-inverse);
+  font-size: 10px;
+  line-height: 16px;
+  text-align: center;
+}
+
+.nav__bell-panel {
+  position: absolute;
+  top: calc(100% + var(--space-1));
+  right: 0;
+  width: 340px;
+  max-height: 420px;
+  overflow-y: auto;
+  padding: var(--space-1);
+  border: 1px solid var(--color-split);
+  border-radius: var(--radius-card);
+  background: var(--color-bg);
+  box-shadow: var(--shadow-card-hover);
+  z-index: 20;
+}
+
+.nav__bell-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-split);
+  font-size: var(--font-size-sm);
+}
+
+.nav__bell-readall {
+  border: none;
+  background: transparent;
+  color: var(--color-primary);
+  font-family: inherit;
+  font-size: var(--font-size-xs);
+  cursor: pointer;
+}
+
+.nav__bell-readall:hover {
+  color: var(--color-primary-hover);
+}
+
+.nav__bell-empty {
+  margin: 0;
+  padding: var(--space-6) var(--space-3);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  text-align: center;
+}
+
+.nav__bell-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.nav__bell-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: none;
+  border-radius: var(--radius-base);
+  background: transparent;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.nav__bell-item:hover {
+  background: var(--color-bg-hover);
+}
+
+.nav__bell-item--unread {
+  background: var(--color-primary-bg);
+}
+
+.nav__bell-title {
+  color: var(--color-primary);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+}
+
+.nav__bell-message {
+  overflow: hidden;
+  color: var(--color-text);
+  font-size: var(--font-size-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nav__bell-time {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
 }
 
 .nav__user {

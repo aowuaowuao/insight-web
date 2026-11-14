@@ -3,10 +3,20 @@
  * 覆盖规范 2.2.1（四）2 要求的 Props / Events 行为，以及导航的折叠与菜单交互。
  * 只断言用户可见行为，不碰内部实现细节。
  */
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { createMemoryHistory, createRouter, type Router } from 'vue-router'
+import type { NotificationItem } from '@/api/notifications'
+
+const notificationsApi = vi.hoisted(() => ({
+  listNotifications: vi.fn(async () => ({ items: [] as NotificationItem[], total: 0, unread: 0 })),
+  markNotificationRead: vi.fn(),
+  markAllNotificationsRead: vi.fn(async () => 0),
+}))
+
+vi.mock('@/api/notifications', () => notificationsApi)
+
 import AppNav from '@/components/AppNav.vue'
 import AppPager from '@/components/AppPager.vue'
 import ArticleCard from '@/components/ArticleCard.vue'
@@ -46,6 +56,9 @@ async function mountWithRouter(component: unknown, props: Record<string, unknown
 
 beforeEach(() => {
   setActivePinia(createPinia())
+  vi.clearAllMocks()
+  notificationsApi.listNotifications.mockResolvedValue({ items: [], total: 0, unread: 0 })
+  notificationsApi.markAllNotificationsRead.mockResolvedValue(0)
 })
 
 describe('ScoreBadge', () => {
@@ -237,5 +250,74 @@ describe('AppNav', () => {
       .filter((l) => l.classes().includes('side__link--active'))
     expect(active).toHaveLength(1)
     expect(active[0]!.attributes('aria-label')).toBe('信息检索')
+  })
+
+  it('铃铛显示未读数，点击通知标记已读并跳到详情', async () => {
+    const item: NotificationItem = {
+      id: 7,
+      article_id: 'art-1',
+      kind: 'project_application',
+      title: '新增项目申报公告',
+      message: '关于组织申报 2026 年度重点研发计划的通知',
+      created_at: '2026-11-14T03:00:00Z',
+      read_at: null,
+      read: false,
+      url: 'https://example.com/a.html',
+      source: 'ctp_kjb',
+      category: 'project_application',
+      published_at: '2026-11-14 10:00:00',
+    }
+    notificationsApi.listNotifications.mockResolvedValue({
+      items: [item],
+      total: 1,
+      unread: 1,
+    })
+    notificationsApi.markNotificationRead.mockResolvedValue({ ...item, read: true })
+
+    const { wrapper, router } = await mountWithRouter(AppNav)
+    await flushPromises()
+    expect(wrapper.find('.nav__badge').text()).toBe('1')
+
+    await wrapper.find('.nav__bell-btn').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.nav__bell-panel').text()).toContain('关于组织申报')
+    await wrapper.find('.nav__bell-item').trigger('click')
+    await flushPromises()
+    expect(notificationsApi.markNotificationRead).toHaveBeenCalledWith(7)
+    expect(router.currentRoute.value.name).toBe('article')
+    expect(router.currentRoute.value.params.id).toBe('art-1')
+  })
+
+  it('全部已读清空角标', async () => {
+    const base: NotificationItem = {
+      id: 1,
+      article_id: 'a1',
+      kind: 'project_application',
+      title: '新增项目申报公告',
+      message: '通知一',
+      created_at: '2026-11-14T03:00:00Z',
+      read_at: null,
+      read: false,
+      url: null,
+      source: null,
+      category: null,
+      published_at: null,
+    }
+    notificationsApi.listNotifications.mockResolvedValue({
+      items: [base, { ...base, id: 2, article_id: 'a2', message: '通知二' }],
+      total: 2,
+      unread: 2,
+    })
+    notificationsApi.markAllNotificationsRead.mockResolvedValue(2)
+
+    const { wrapper } = await mountWithRouter(AppNav)
+    await flushPromises()
+    expect(wrapper.find('.nav__badge').text()).toBe('2')
+    await wrapper.find('.nav__bell-btn').trigger('click')
+    await flushPromises()
+    await wrapper.find('.nav__bell-readall').trigger('click')
+    await flushPromises()
+    expect(notificationsApi.markAllNotificationsRead).toHaveBeenCalledTimes(1)
+    expect(wrapper.find('.nav__badge').exists()).toBe(false)
   })
 })
