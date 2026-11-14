@@ -259,6 +259,7 @@ async function submitSite(): Promise<void> {
     errorByTab.sites = '站点名称与列表地址不能为空'
     return
   }
+  errorByTab.sites = ''
   try {
     if (editingSiteId.value === null) {
       await createAdminSite(siteForm.value)
@@ -276,6 +277,7 @@ async function submitSite(): Promise<void> {
 
 async function removeSite(site: AdminSite): Promise<void> {
   if (!window.confirm(`确定删除站点「${site.name}」吗？删除后不可恢复。`)) return
+  errorByTab.sites = ''
   try {
     await deleteAdminSite(site.id)
     flash('站点已删除')
@@ -286,6 +288,7 @@ async function removeSite(site: AdminSite): Promise<void> {
 }
 
 async function toggleSite(site: AdminSite): Promise<void> {
+  errorByTab.sites = ''
   try {
     await updateAdminSite(site.id, { enabled: !site.enabled })
     await loadSites()
@@ -344,6 +347,7 @@ async function submitUser(): Promise<void> {
     errorByTab.users = '用户名不能为空'
     return
   }
+  errorByTab.users = ''
   try {
     const created = await createAdminUser({
       username: userForm.value.username.trim(),
@@ -364,6 +368,7 @@ async function patchUser(
   user: AdminUser,
   patch: { role?: 'admin' | 'user'; status?: 'active' | 'disabled' },
 ): Promise<void> {
+  errorByTab.users = ''
   try {
     await updateAdminUser(user.id, patch)
     flash('账号已更新')
@@ -375,6 +380,7 @@ async function patchUser(
 
 async function resetPassword(user: AdminUser): Promise<void> {
   if (!window.confirm(`确定重置「${user.username}」的密码吗？`)) return
+  errorByTab.users = ''
   try {
     const temporary = await resetAdminPassword(user.id)
     tempPassword.value = temporary

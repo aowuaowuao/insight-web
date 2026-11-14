@@ -119,6 +119,98 @@ describe('AdminView Tab 状态隔离', () => {
     await flushPromises()
 
     expect(wrapper.find('.notice--error').exists()).toBe(false)
-    expect(wrapper.text()).toContain('账号管理')
+    expect(wrapper.find('.tabs__item--active').text()).toBe('账号管理')
+  })
+
+  it('站点列表的迟到响应不覆盖后发请求的结果', async () => {
+    const pending = deferred<unknown[]>()
+    adminApi.listAdminSites.mockReturnValueOnce(pending.promise).mockResolvedValueOnce([])
+    const wrapper = await mountAdmin()
+
+    await clickTab(wrapper, 1)
+    await clickTab(wrapper, 2)
+    await clickTab(wrapper, 1)
+    expect(wrapper.text()).toContain('共 0 个站点')
+
+    pending.resolve([
+      {
+        id: 99,
+        name: '迟到站点',
+        list_url: 'https://late.example.com',
+        category: '',
+        region: '',
+        timezone: 'Asia/Shanghai',
+        enabled: true,
+        created_at: '',
+        updated_at: '',
+      },
+    ])
+    await flushPromises()
+    expect(wrapper.text()).toContain('共 0 个站点')
+    expect(wrapper.text()).not.toContain('迟到站点')
+  })
+
+  it('账号列表的迟到响应不覆盖后发请求的结果', async () => {
+    const pending = deferred<{ items: unknown[]; total: number }>()
+    adminApi.listAdminUsers
+      .mockReturnValueOnce(pending.promise)
+      .mockResolvedValueOnce({ items: [], total: 0 })
+    const wrapper = await mountAdmin()
+
+    await clickTab(wrapper, 2)
+    await clickTab(wrapper, 3)
+    await clickTab(wrapper, 2)
+    expect(wrapper.text()).toContain('共 0 个账号')
+
+    pending.resolve({
+      items: [
+        {
+          id: 99,
+          username: 'late-user',
+          display_name: '',
+          department: '',
+          role: 'user',
+          status: 'active',
+          last_login_at: null,
+          created_at: '',
+        },
+      ],
+      total: 1,
+    })
+    await flushPromises()
+    expect(wrapper.text()).toContain('共 0 个账号')
+    expect(wrapper.text()).not.toContain('late-user')
+  })
+
+  it('日志列表的迟到响应不覆盖后发请求的结果', async () => {
+    const pending = deferred<{ items: unknown[]; total: number }>()
+    adminApi.listOperationLogs
+      .mockReturnValueOnce(pending.promise)
+      .mockResolvedValueOnce({ items: [], total: 0 })
+    const wrapper = await mountAdmin()
+
+    await clickTab(wrapper, 3)
+    await clickTab(wrapper, 0)
+    await clickTab(wrapper, 3)
+    expect(wrapper.text()).toContain('暂无日志')
+
+    pending.resolve({
+      items: [
+        {
+          id: 99,
+          user_id: 1,
+          username: 'late-user',
+          action: 'auth.login',
+          target: '',
+          detail: '迟到日志',
+          ip: '127.0.0.1',
+          created_at: '2026-11-14 20:00:00',
+        },
+      ],
+      total: 1,
+    })
+    await flushPromises()
+    expect(wrapper.text()).toContain('暂无日志')
+    expect(wrapper.text()).not.toContain('迟到日志')
   })
 })
