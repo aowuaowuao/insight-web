@@ -94,27 +94,17 @@ URL 上的 `q` 与 `category` 是这套页面的唯一真相来源：
 
 ## 登录
 
-### 测试账号
+登录走真实后端 `POST /v1/auth/login`，成功后返回 Bearer Token；Token 与用户资料保存在
+`localStorage`（`insight-web.auth.token` / `insight-web.auth.user`），刷新页面不会掉登录。
+右上角显示当前账户名，点「退出」调用 `POST /v1/auth/logout` 并清除本地会话。
 
-| 用户名 | 密码 |
-|---|---|
-| `test` | 见 `src/stores/auth.ts` 里的 `TEST_ACCOUNTS` |
+管理员账号在首次启动时由后端读取 `.env` 的 `INSIGHT_ADMIN_USERNAME` /
+`INSIGHT_ADMIN_PASSWORD` 创建（参考 `.env.example`，不要把真实密码提交到仓库）。
+测试/验收账号由管理员登录「管理控制台 → 账号管理」创建或重置，仓库不再内置
+`test / 123456` 这类演示账号。
 
-登录态存在 `localStorage`（key：`insight-web.auth.username`），刷新页面不会掉登录。
-右上角显示当前账户名，点「退出」清除登录态并回到登录页。
-
-### ⚠️ 这只是演示用的前端校验
-
-密码**明文写在前端代码里**，打开开发者工具就能看到，而且会被打进 `dist` 产物。
-这是「纯前端无法安全保存密码」的必然结果，不是疏忽。
-
-真实项目必须改成：
-
-1. 后端提供 `POST /api/login`，校验通过后下发 **HttpOnly + Secure Cookie**（或短期 token + 刷新机制）
-2. 前端不再持有密码，只保存「已登录」这一事实
-3. 路由守卫改为询问后端「当前会话是否有效」，而不是看本地变量
-
-`src/stores/auth.ts` 里的 `login()` 已经预留了这个形状——把本地比对换成 `await http.post('/api/login', ...)` 即可。
+连续 5 次登录失败后账号锁定 15 分钟；修改密码使用 `POST /v1/auth/password`，请求体字段为
+`current_password` / `new_password`，新密码要求大小写字母、数字、特殊字符且至少 8 位。
 
 ## 目录结构
 

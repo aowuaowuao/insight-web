@@ -18,6 +18,11 @@ export interface DateRange {
   to: string
 }
 
+/** URL 可能是手改的：只接受 YYYY-MM-DD，其它值当作没填 */
+export function isYmd(value: unknown): value is string {
+  return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)
+}
+
 /** 本地时区的 YYYY-MM-DD（不用 toISOString，它会先转成 UTC） */
 export function localDayString(date: Date): string {
   const year = date.getFullYear()

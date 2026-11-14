@@ -117,17 +117,17 @@ describe('api/auth', () => {
     const post = vi.spyOn(http, 'post').mockResolvedValue(undefined)
     await logout()
     expect(post).toHaveBeenCalledWith('/v1/auth/logout', undefined, { retries: 0 })
-    await changePassword({ old_password: 'old', new_password: 'NewPassw0rd!2026' })
+    await changePassword({ current_password: 'old', new_password: 'NewPassw0rd!2026' })
     expect(post).toHaveBeenLastCalledWith(
       '/v1/auth/password',
-      { old_password: 'old', new_password: 'NewPassw0rd!2026' },
+      { current_password: 'old', new_password: 'NewPassw0rd!2026' },
       { retries: 0 },
     )
   })
 
-  it('updateProfile 走 PUT 并返回更新后的用户', async () => {
+  it('updateProfile 走 PATCH 并返回更新后的用户', async () => {
     const next = { ...USER, department: '政策研究室' }
-    const spy = vi.spyOn(http, 'put').mockResolvedValue({ data: next })
+    const spy = vi.spyOn(http, 'patch').mockResolvedValue({ data: next })
     await expect(updateProfile({ department: '政策研究室' })).resolves.toEqual(next)
     expect(spy).toHaveBeenCalledWith('/v1/me/profile', { department: '政策研究室' })
   })

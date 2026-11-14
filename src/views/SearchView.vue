@@ -33,7 +33,7 @@ import { sourceName } from '@/constants/sources'
 import { listTags, tagName, type TagDef } from '@/api/tags'
 import { readJson, writeJson } from '@/utils/storage'
 import { STORAGE_KEYS } from '@/utils/storageKeys'
-import { isRangeInverted, resolveRange, type TimeRange } from '@/utils/dateRange'
+import { isRangeInverted, isYmd, resolveRange, type TimeRange } from '@/utils/dateRange'
 
 interface CardItem {
   article_id: string
@@ -390,8 +390,10 @@ function stateFromRoute(): RouteState {
   const cats = normalizeCategories(route.query.category)
   const srcs = normalizeList(route.query.source)
   const industryRaw = typeof route.query.industry === 'string' ? route.query.industry.trim() : ''
-  const from = typeof route.query.from === 'string' ? route.query.from.trim() : ''
-  const to = typeof route.query.to === 'string' ? route.query.to.trim() : ''
+  const fromRaw = typeof route.query.from === 'string' ? route.query.from.trim() : ''
+  const toRaw = typeof route.query.to === 'string' ? route.query.to.trim() : ''
+  const from = isYmd(fromRaw) ? fromRaw : ''
+  const to = isYmd(toRaw) ? toRaw : ''
   const sortRaw = route.query.sort
   const nextSort: SearchSort = isSearchSort(sortRaw) ? sortRaw : 'relevance'
   const high = route.query.high === '1'
@@ -476,7 +478,7 @@ function syncAndRun(): void {
   appliedSignature = signatureOf(state)
   const nextQuery = queryOf(state)
   if (JSON.stringify(route.query) !== JSON.stringify(nextQuery)) {
-    void router.replace({ query: nextQuery })
+    void router.push({ query: nextQuery })
   }
   void run()
 }

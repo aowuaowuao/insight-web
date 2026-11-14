@@ -80,6 +80,8 @@ const jobsRef = ref<HTMLElement | null>(null)
 let dailyChart: ECharts | null = null
 let categoryChart: ECharts | null = null
 let jobsChart: ECharts | null = null
+/** 统计请求序号：快速切换 7/30 天时旧响应不能覆盖新结果 */
+let statsRequestId = 0
 
 function disposeCharts(): void {
   dailyChart?.dispose()
@@ -91,16 +93,20 @@ function disposeCharts(): void {
 }
 
 async function loadStats(): Promise<void> {
+  const requestId = ++statsRequestId
   loading.value = true
   error.value = ''
   try {
-    stats.value = await getAdminStats(statsDays.value)
+    const next = await getAdminStats(statsDays.value)
+    if (requestId !== statsRequestId) return
+    stats.value = next
     await nextTick()
+    if (requestId !== statsRequestId) return
     drawCharts()
   } catch (err) {
-    error.value = describeError(err)
+    if (requestId === statsRequestId) error.value = describeError(err)
   } finally {
-    loading.value = false
+    if (requestId === statsRequestId) loading.value = false
   }
 }
 

@@ -36,8 +36,10 @@ const activeTab = ref<TabKey>('favorites')
 const favorites = ref<FavoriteItem[]>([])
 const history = ref<HistoryItem[]>([])
 const selectedIds = ref<string[]>([])
-const loading = ref(false)
-const loadError = ref('')
+const favoritesLoading = ref(false)
+const favoritesError = ref('')
+const historyLoading = ref(false)
+const historyError = ref('')
 
 const notify = ref('')
 let notifyTimer: ReturnType<typeof setTimeout> | null = null
@@ -64,28 +66,28 @@ function describeError(error: unknown): string {
 }
 
 async function loadFavorites(): Promise<void> {
-  loading.value = true
-  loadError.value = ''
+  favoritesLoading.value = true
+  favoritesError.value = ''
   try {
     const result = await listFavorites()
     favorites.value = result.items
   } catch (error) {
-    loadError.value = describeError(error)
+    favoritesError.value = describeError(error)
   } finally {
-    loading.value = false
+    favoritesLoading.value = false
   }
 }
 
 async function loadHistory(): Promise<void> {
-  loading.value = true
-  loadError.value = ''
+  historyLoading.value = true
+  historyError.value = ''
   try {
     const result = await listHistory()
     history.value = result.items
   } catch (error) {
-    loadError.value = describeError(error)
+    historyError.value = describeError(error)
   } finally {
-    loading.value = false
+    historyLoading.value = false
   }
 }
 
@@ -255,7 +257,7 @@ async function submitPassword(): Promise<void> {
   }
   passwordSubmitting.value = true
   try {
-    await changePassword({ old_password: oldPassword.value, new_password: newPassword.value })
+    await changePassword({ current_password: oldPassword.value, new_password: newPassword.value })
     oldPassword.value = ''
     newPassword.value = ''
     confirmPassword.value = ''
@@ -323,13 +325,12 @@ const TABS: { key: TabKey; label: string }[] = [
     </div>
 
     <p v-if="notify" class="profile__notify" role="status">{{ notify }}</p>
-    <p v-if="loadError" class="profile__notify profile__notify--error" role="alert">
-      {{ loadError }}
-    </p>
-    <p v-if="loading" class="panel__hint">加载中…</p>
-
     <!-- 我的收藏 -->
     <div v-if="activeTab === 'favorites'" class="panel">
+      <p v-if="favoritesError" class="profile__notify profile__notify--error" role="alert">
+        {{ favoritesError }}
+      </p>
+      <p v-if="favoritesLoading" class="panel__hint">加载中…</p>
       <div v-if="favorites.length" class="panel__toolbar">
         <label class="check">
           <input type="checkbox" :checked="allSelected" @change="toggleSelectAll" />
@@ -369,7 +370,7 @@ const TABS: { key: TabKey; label: string }[] = [
       </ul>
 
       <EmptyState
-        v-else
+        v-else-if="!favoritesLoading && !favoritesError"
         variant="no-data"
         title="还没有收藏任何公告"
         description="在公告详情页点「收藏」即可加入这里。"
@@ -378,6 +379,10 @@ const TABS: { key: TabKey; label: string }[] = [
 
     <!-- 浏览历史 -->
     <div v-else-if="activeTab === 'history'" class="panel">
+      <p v-if="historyError" class="profile__notify profile__notify--error" role="alert">
+        {{ historyError }}
+      </p>
+      <p v-if="historyLoading" class="panel__hint">加载中…</p>
       <div v-if="history.length" class="panel__toolbar">
         <span class="panel__hint">最近浏览 {{ history.length }} 条（按时间倒序）</span>
         <button class="btn btn--danger" type="button" @click="clearHistory">清空历史</button>
@@ -396,7 +401,7 @@ const TABS: { key: TabKey; label: string }[] = [
       </ul>
 
       <EmptyState
-        v-else
+        v-else-if="!historyLoading && !historyError"
         variant="no-data"
         title="还没有浏览记录"
         description="浏览过的公告会自动记录在这里。"

@@ -17,7 +17,7 @@
  * ── 其余按规范落地 ─────────────────────────────────────────────
  * 时间范围用 utils/dateRange 的本地日换算：绝不 toISOString()，那是 UTC 日，
  * 东八区 0-8 点会被算成前一天。分页走后端 offset，排序映射到后端四个 sort 值，
- * 筛选状态写进 URL（router.replace），刷新 / 分享 / 前进后退都能还原同一状态。
+ * 筛选状态写进 URL（router.push），刷新 / 分享 / 前进后退都能还原同一状态。
  */
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter, type LocationQueryRaw } from 'vue-router'
@@ -31,7 +31,7 @@ import { listSources, type SourceStat } from '@/api/sources'
 import { useLatestRequest } from '@/composables/useLatestRequest'
 import { CATEGORY_ORDER, categoryName } from '@/constants/categories'
 import { sourceName } from '@/constants/sources'
-import { isRangeInverted, resolveRange, type TimeRange } from '@/utils/dateRange'
+import { isRangeInverted, isYmd, resolveRange, type TimeRange } from '@/utils/dateRange'
 
 /** 一个 Tab 与后端大类的映射 */
 interface CategoryTab {
@@ -210,11 +210,6 @@ function isTimeRange(value: unknown): value is TimeRange {
   return value === 'all' || value === '7d' || value === '30d' || value === 'custom'
 }
 
-/** URL 可能是手改的：只接受 YYYY-MM-DD，其它值当作没填 */
-function isYmd(value: unknown): value is string {
-  return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)
-}
-
 function normalizeList(value: unknown): string[] {
   const list = Array.isArray(value) ? value : value === undefined || value === null ? [] : [value]
   return list.filter((item): item is string => typeof item === 'string' && item !== '')
@@ -342,12 +337,12 @@ function queryKey(query: Record<string, unknown>): string {
 
 function syncUrl(): void {
   const state = currentState()
-  // 先记签名：下面 router.replace 会触发 watch -> applyFromRoute，
+  // 先记签名：下面 router.push 会触发 watch -> applyFromRoute，
   // 签名相同即视为「已知状态」，不会再多发一次请求。
   appliedSignature = signatureOf(state)
   const nextQuery = queryOf(state)
   if (queryKey(route.query) !== queryKey(nextQuery)) {
-    void router.replace({ query: nextQuery })
+    void router.push({ query: nextQuery })
   }
 }
 

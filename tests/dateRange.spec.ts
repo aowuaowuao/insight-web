@@ -6,7 +6,7 @@
  * 而这类 bug 在本地白天测不出来。
  */
 import { describe, expect, it } from 'vitest'
-import { isRangeInverted, localDayString, resolveRange } from '@/utils/dateRange'
+import { isRangeInverted, isYmd, localDayString, resolveRange } from '@/utils/dateRange'
 
 describe('localDayString', () => {
   it('取本地年月日而不是 UTC 日期', () => {
@@ -53,6 +53,16 @@ describe('resolveRange', () => {
   it('跨年时开始日期正确回退', () => {
     const range = resolveRange('7d', '', '', new Date(2027, 0, 2, 9, 0))
     expect(range).toEqual({ from: '2026-12-27', to: '2027-01-02' })
+  })
+})
+
+describe('isYmd', () => {
+  it('只接受 YYYY-MM-DD 形状', () => {
+    expect(isYmd('2026-11-14')).toBe(true)
+    expect(isYmd('2026-1-4')).toBe(false)
+    expect(isYmd('abc')).toBe(false)
+    expect(isYmd('')).toBe(false)
+    expect(isYmd(undefined)).toBe(false)
   })
 })
 

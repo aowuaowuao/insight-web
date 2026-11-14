@@ -37,7 +37,7 @@ export function logout(): Promise<void> {
 }
 
 export interface ChangePasswordInput {
-  old_password: string
+  current_password: string
   new_password: string
 }
 
@@ -51,5 +51,5 @@ export interface ProfilePatch {
 }
 
 export function updateProfile(patch: ProfilePatch): Promise<AuthUser> {
-  return http.put<{ data: AuthUser }>('/v1/me/profile', patch).then((payload) => payload.data)
+  return http.patch<{ data: AuthUser }>('/v1/me/profile', patch).then((payload) => payload.data)
 }

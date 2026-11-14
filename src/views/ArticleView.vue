@@ -292,6 +292,8 @@ async function load(id: string): Promise<void> {
   checklist.value = null
   related.value = []
   favorited.value = false
+  favoriteLoading.value = false
+  favoriteError.value = ''
   toc.value = []
   checklistOpen.value = false
   checklistError.value = ''
