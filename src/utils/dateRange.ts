@@ -18,9 +18,21 @@ export interface DateRange {
   to: string
 }
 
-/** URL 可能是手改的：只接受 YYYY-MM-DD，其它值当作没填 */
+const YMD_RE = /^(\d{4})-(\d{2})-(\d{2})$/
+
+/** URL 可能是手改的：只接受真实存在的 YYYY-MM-DD，其它值当作没填 */
 export function isYmd(value: unknown): value is string {
-  return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)
+  if (typeof value !== 'string') return false
+  const match = YMD_RE.exec(value)
+  if (!match) return false
+  const year = Number(match[1])
+  const month = Number(match[2])
+  const day = Number(match[3])
+  if (month < 1 || month > 12 || day < 1) return false
+  const date = new Date(0)
+  date.setFullYear(year, month - 1, day)
+  date.setHours(0, 0, 0, 0)
+  return date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day
 }
 
 /** 本地时区的 YYYY-MM-DD（不用 toISOString，它会先转成 UTC） */

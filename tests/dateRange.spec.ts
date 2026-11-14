@@ -64,6 +64,19 @@ describe('isYmd', () => {
     expect(isYmd('')).toBe(false)
     expect(isYmd(undefined)).toBe(false)
   })
+
+  it('拒绝形状正确但日历上不存在的日期', () => {
+    expect(isYmd('2026-99-99')).toBe(false)
+    expect(isYmd('2026-13-01')).toBe(false)
+    expect(isYmd('2026-02-30')).toBe(false)
+    expect(isYmd('2026-04-31')).toBe(false)
+    expect(isYmd('2026-00-10')).toBe(false)
+  })
+
+  it('接受闰年 2 月 29 日', () => {
+    expect(isYmd('2028-02-29')).toBe(true)
+    expect(isYmd('2026-02-29')).toBe(false)
+  })
 })
 
 describe('isRangeInverted', () => {

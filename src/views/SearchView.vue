@@ -447,7 +447,7 @@ function queryOf(state: RouteState): Record<string, string | string[] | undefine
     // 日期时刷新会被还原成「全部时间」，输入框直接消失。
     //
     // 反过来说，这条必须写进 URL，否则会出现「点了自定义却弹回全部时间」的死循环：
-    // 点自定义 → 时间条件清空 → 生成的 query 与原 URL 不同 → router.replace 改 URL
+    // 点自定义 → 时间条件清空 → 生成的 query 与原 URL 不同 → router.push 改 URL
     // → applyFromRoute 发现既无 range 又无 from/to，还原成 'all' → 输入框不出现。
     // 只有「全部时间」才是真正的默认值、可以不写。
     range: state.range === 'all' ? undefined : state.range,

@@ -7,7 +7,7 @@
  * 3) 账号管理：新增、禁用/启用、角色调整、重置密码；
  * 4) 操作日志：按动作、用户名、日期范围筛选。
  */
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { init, use, type ECharts } from 'echarts/core'
 import { GaugeChart, LineChart, PieChart } from 'echarts/charts'
 import { GridComponent, LegendComponent, TooltipComponent } from 'echarts/components'
@@ -51,9 +51,21 @@ const TABS: { key: TabKey; label: string }[] = [
 ]
 const activeTab = ref<TabKey>('stats')
 
-const loading = ref(false)
+const loadingByTab = reactive<Record<TabKey, boolean>>({
+  stats: false,
+  sites: false,
+  users: false,
+  logs: false,
+})
+const errorByTab = reactive<Record<TabKey, string>>({ stats: '', sites: '', users: '', logs: '' })
+const loading = computed(() => loadingByTab[activeTab.value])
+const error = computed({
+  get: () => errorByTab[activeTab.value],
+  set: (value: string) => {
+    errorByTab[activeTab.value] = value
+  },
+})
 const message = ref('')
-const error = ref('')
 let messageTimer: ReturnType<typeof setTimeout> | null = null
 function flash(text: string): void {
   message.value = text
@@ -94,8 +106,8 @@ function disposeCharts(): void {
 
 async function loadStats(): Promise<void> {
   const requestId = ++statsRequestId
-  loading.value = true
-  error.value = ''
+  loadingByTab.stats = true
+  errorByTab.stats = ''
   try {
     const next = await getAdminStats(statsDays.value)
     if (requestId !== statsRequestId) return
@@ -104,9 +116,9 @@ async function loadStats(): Promise<void> {
     if (requestId !== statsRequestId) return
     drawCharts()
   } catch (err) {
-    if (requestId === statsRequestId) error.value = describeError(err)
+    if (requestId === statsRequestId) errorByTab.stats = describeError(err)
   } finally {
-    if (requestId === statsRequestId) loading.value = false
+    if (requestId === statsRequestId) loadingByTab.stats = false
   }
 }
 
@@ -206,14 +218,14 @@ const siteForm = ref<AdminSiteInput>({
 })
 
 async function loadSites(): Promise<void> {
-  loading.value = true
-  error.value = ''
+  loadingByTab.sites = true
+  errorByTab.sites = ''
   try {
     sites.value = await listAdminSites()
   } catch (err) {
-    error.value = describeError(err)
+    errorByTab.sites = describeError(err)
   } finally {
-    loading.value = false
+    loadingByTab.sites = false
   }
 }
 
@@ -300,8 +312,8 @@ const userForm = ref({
 const tempPassword = ref('')
 
 async function loadUsers(): Promise<void> {
-  loading.value = true
-  error.value = ''
+  loadingByTab.users = true
+  errorByTab.users = ''
   try {
     const result = await listAdminUsers({
       q: userQuery.value,
@@ -312,9 +324,9 @@ async function loadUsers(): Promise<void> {
     users.value = result.items
     userTotal.value = result.total
   } catch (err) {
-    error.value = describeError(err)
+    errorByTab.users = describeError(err)
   } finally {
-    loading.value = false
+    loadingByTab.users = false
   }
 }
 
@@ -381,8 +393,8 @@ const LOG_PAGE_SIZE = 20
 const logPages = computed(() => Math.max(1, Math.ceil(logTotal.value / LOG_PAGE_SIZE)))
 
 async function loadLogs(): Promise<void> {
-  loading.value = true
-  error.value = ''
+  loadingByTab.logs = true
+  errorByTab.logs = ''
   try {
     const result = await listOperationLogs({
       action: logAction.value,
@@ -395,9 +407,9 @@ async function loadLogs(): Promise<void> {
     logs.value = result.items
     logTotal.value = result.total
   } catch (err) {
-    error.value = describeError(err)
+    errorByTab.logs = describeError(err)
   } finally {
-    loading.value = false
+    loadingByTab.logs = false
   }
 }
 
@@ -441,7 +453,7 @@ function actionLabel(action: string): string {
 
 // ── Tab 调度 ───────────────────────────────────────────
 watch(activeTab, async (tab) => {
-  error.value = ''
+  errorByTab[tab] = ''
   if (tab === 'stats') await loadStats()
   else if (tab === 'sites') await loadSites()
   else if (tab === 'users') await loadUsers()
