@@ -7,7 +7,13 @@
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { http, HttpError } from '@/api/http'
-import { getArticle, getChecklist, type ArticleDetail, type ArticleChecklist } from '@/api/article'
+import {
+  generateChecklist,
+  getArticle,
+  getChecklist,
+  type ArticleDetail,
+  type ArticleChecklist,
+} from '@/api/article'
 import { categoryStats, listCategories, type CategoryDef, type CategoryStat } from '@/api/category'
 import { listTags, resetTagCache, tagName, type TagDef } from '@/api/tags'
 
@@ -69,6 +75,33 @@ describe('getChecklist', () => {
   it('非 HttpError 的异常（如取消）也要抛出', async () => {
     vi.spyOn(http, 'get').mockRejectedValue(new Error('掉线'))
     await expect(getChecklist('abc123')).rejects.toThrow('掉线')
+  })
+})
+
+describe('generateChecklist', () => {
+  const checklist: ArticleChecklist = {
+    article_id: 'abc123',
+    title: '通知',
+    url: 'https://example.com/a.html',
+    engine: 'rules',
+    generated_at: '2026-11-13 10:00:00',
+    items: [{ text: '营业执照副本', basis: 'excerpt', verified: true }],
+  }
+
+  beforeEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('默认 force=false 并按 id 编码请求', async () => {
+    const spy = vi.spyOn(http, 'post').mockResolvedValue({ data: checklist })
+    await expect(generateChecklist('abc/123')).resolves.toEqual(checklist)
+    expect(spy).toHaveBeenCalledWith('/v1/articles/abc%2F123/checklist', { force: false })
+  })
+
+  it('force=true 时请求重新生成', async () => {
+    const spy = vi.spyOn(http, 'post').mockResolvedValue({ data: checklist })
+    await expect(generateChecklist('abc123', true)).resolves.toEqual(checklist)
+    expect(spy).toHaveBeenCalledWith('/v1/articles/abc123/checklist', { force: true })
   })
 })
 

@@ -13,12 +13,14 @@ import type { ArticleListItem } from '@/api/articles'
 
 const getArticle = vi.fn()
 const getChecklist = vi.fn()
+const generateChecklist = vi.fn()
 const listArticles = vi.fn()
 const listTags = vi.fn()
 
 vi.mock('@/api/article', () => ({
   getArticle: (...args: unknown[]) => getArticle(...args),
   getChecklist: (...args: unknown[]) => getChecklist(...args),
+  generateChecklist: (...args: unknown[]) => generateChecklist(...args),
 }))
 vi.mock('@/api/articles', () => ({
   listArticles: (...args: unknown[]) => listArticles(...args),
@@ -99,6 +101,7 @@ async function mountView() {
 beforeEach(() => {
   getArticle.mockReset()
   getChecklist.mockReset()
+  generateChecklist.mockReset()
   listArticles.mockReset()
   listTags.mockReset()
   listTags.mockResolvedValue([])
@@ -203,6 +206,22 @@ describe('ArticleView 相关公告', () => {
 })
 
 describe('ArticleView 申报清单', () => {
+  function projectDetail(): ArticleDetail {
+    return detail({
+      tags: [{ tag: 'project_application', confidence: 0.95, evidence: '申报', engine: 'llm' }],
+      extractions: {
+        project_application: {
+          program_name: {
+            value: '科技型中小企业技术创新项目',
+            raw_text: '科技型中小企业技术创新项目',
+            confidence: 0.9,
+            verified: true,
+          },
+        },
+      },
+    })
+  }
+
   const checklist = {
     article_id: 'a1',
     title: '关于组织申报2026年度科技型中小企业技术创新项目的通知',
@@ -248,5 +267,69 @@ describe('ArticleView 申报清单', () => {
     await download!.trigger('click')
     expect(createObjectURL).toHaveBeenCalledTimes(1)
     expect(revokeObjectURL).toHaveBeenCalledWith('blob:mock')
+  })
+
+  it('没有清单但命中申报标签时可生成，并打开生成结果', async () => {
+    getArticle.mockResolvedValue(projectDetail())
+    getChecklist.mockResolvedValue(null)
+    generateChecklist.mockResolvedValue(checklist)
+    const wrapper = await mountView()
+    const button = wrapper.findAll('button').find((node) => node.text() === '生成申报清单')
+    expect(button).toBeTruthy()
+    await button!.trigger('click')
+    await flushPromises()
+    expect(generateChecklist).toHaveBeenCalledWith('a1', false)
+    const dialog = wrapper.find('[role="dialog"]')
+    expect(dialog.exists()).toBe(true)
+    expect(dialog.text()).toContain('准备营业执照副本')
+  })
+
+  it('已有清单时可强制重新生成', async () => {
+    getArticle.mockResolvedValue(projectDetail())
+    getChecklist.mockResolvedValue(checklist)
+    generateChecklist.mockResolvedValue(checklist)
+    const wrapper = await mountView()
+    const button = wrapper.findAll('button').find((node) => node.text() === '重新生成')
+    expect(button).toBeTruthy()
+    await button!.trigger('click')
+    await flushPromises()
+    expect(generateChecklist).toHaveBeenCalledWith('a1', true)
+  })
+
+  it('生成失败时在清单卡片内显示后端错误，不把整页打回错误态', async () => {
+    getArticle.mockResolvedValue(projectDetail())
+    getChecklist.mockResolvedValue(null)
+    generateChecklist.mockRejectedValue(new Error('该文章不是项目申报类，无法生成清单'))
+    const wrapper = await mountView()
+    const button = wrapper.findAll('button').find((node) => node.text() === '生成申报清单')
+    await button!.trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.card__error').text()).toContain('无法生成清单')
+    expect(wrapper.text()).toContain('第一段正文')
+  })
+
+  it('非申报文章不显示申报清单区块', async () => {
+    getArticle.mockResolvedValue(detail())
+    getChecklist.mockResolvedValue(null)
+    const wrapper = await mountView()
+    expect(wrapper.findAll('button').some((node) => node.text().includes('生成申报清单'))).toBe(
+      false,
+    )
+    expect(wrapper.text()).not.toContain('申报准备清单')
+  })
+
+  it('命中申报标签但缺少抽取要素时说明无法生成', async () => {
+    getArticle.mockResolvedValue(
+      detail({
+        tags: [{ tag: 'project_application', confidence: 0.9, evidence: '申报', engine: 'llm' }],
+        extractions: {},
+      }),
+    )
+    getChecklist.mockResolvedValue(null)
+    const wrapper = await mountView()
+    expect(wrapper.findAll('button').some((node) => node.text().includes('生成申报清单'))).toBe(
+      false,
+    )
+    expect(wrapper.text()).toContain('暂无法生成清单')
   })
 })

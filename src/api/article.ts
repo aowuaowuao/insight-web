@@ -78,3 +78,18 @@ export async function getChecklist(articleId: string): Promise<ArticleChecklist 
     throw error
   }
 }
+
+/**
+ * POST /v1/articles/{article_id}/checklist —— 按需生成申报准备清单
+ * force=false 时后端复用已有清单（幂等）；force=true 才重新生成。
+ */
+export async function generateChecklist(
+  articleId: string,
+  force = false,
+): Promise<ArticleChecklist> {
+  const res = await http.post<ApiEnvelope<ArticleChecklist>>(
+    `/v1/articles/${encodeURIComponent(articleId)}/checklist`,
+    { force },
+  )
+  return res.data
+}

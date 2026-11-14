@@ -21,7 +21,13 @@ import EmptyState from '@/components/EmptyState.vue'
 import ArticleCard from '@/components/ArticleCard.vue'
 import ScoreBadge from '@/components/ScoreBadge.vue'
 import SkeletonList from '@/components/SkeletonList.vue'
-import { getArticle, getChecklist, type ArticleChecklist, type ArticleDetail } from '@/api/article'
+import {
+  generateChecklist,
+  getArticle,
+  getChecklist,
+  type ArticleChecklist,
+  type ArticleDetail,
+} from '@/api/article'
 import { listArticles, type ArticleListItem } from '@/api/articles'
 import { listTags, tagName, type TagDef } from '@/api/tags'
 import { categoryName } from '@/constants/categories'
@@ -196,6 +202,34 @@ async function loadRelated(id: string, category: string | null, requestId: numbe
 
 /** 申报清单弹窗（规范模块四（7）：弹窗展示 + 支持下载） */
 const checklistOpen = ref(false)
+const checklistLoading = ref(false)
+const checklistError = ref('')
+
+/** 与后端 checklist_service 的适用条件一致：命中申报标签且有抽取块 */
+const isProjectArticle = computed(
+  () => article.value?.tags.some((item) => item.tag === 'project_application') ?? false,
+)
+const canGenerateChecklist = computed(
+  () =>
+    isProjectArticle.value &&
+    Boolean(article.value?.extractions?.project_application) &&
+    Boolean(article.value?.body?.trim()),
+)
+
+async function generateChecklistAction(force = false): Promise<void> {
+  const item = article.value
+  if (!item || checklistLoading.value) return
+  checklistLoading.value = true
+  checklistError.value = ''
+  try {
+    checklist.value = await generateChecklist(item.article_id, force)
+    checklistOpen.value = true
+  } catch (err) {
+    checklistError.value = err instanceof Error ? err.message : '申报清单生成失败'
+  } finally {
+    checklistLoading.value = false
+  }
+}
 
 /** Esc 关闭弹窗：规范要求三态交互完整，弹窗不能只靠点 ✕ 才能关 */
 function onKeydown(event: KeyboardEvent): void {
@@ -238,6 +272,8 @@ async function load(id: string): Promise<void> {
   checklist.value = null
   related.value = []
   checklistOpen.value = false
+  checklistError.value = ''
+  checklistLoading.value = false
   try {
     const detail = await getArticle(id)
     if (requestId !== loadRequestId) return
@@ -365,30 +401,59 @@ watch(
         <p class="card__note">以上字段由模型从正文中抽取，标「待核验」的请以原文为准。</p>
       </section>
 
-      <section v-if="checklist?.items.length" class="card">
+      <section v-if="checklist?.items.length || isProjectArticle" class="card">
         <div class="card__head">
           <h2 class="card__title card__title--inline">申报准备清单</h2>
-          <div class="card__actions">
+          <div v-if="checklist?.items.length" class="card__actions">
             <button class="btn btn--ghost" type="button" @click="checklistOpen = true">
               弹窗查看
+            </button>
+            <button
+              class="btn btn--ghost"
+              type="button"
+              :disabled="checklistLoading"
+              @click="generateChecklistAction(true)"
+            >
+              {{ checklistLoading ? '生成中…' : '重新生成' }}
             </button>
             <button class="btn btn--primary" type="button" @click="downloadChecklist">
               下载清单
             </button>
           </div>
+          <div v-else-if="canGenerateChecklist" class="card__actions">
+            <button
+              class="btn btn--primary"
+              type="button"
+              :disabled="checklistLoading"
+              @click="generateChecklistAction(false)"
+            >
+              {{ checklistLoading ? '生成中…' : '生成申报清单' }}
+            </button>
+          </div>
         </div>
-        <ol class="checklist">
-          <li v-for="(item, index) in checklist.items" :key="index" class="checklist__item">
-            <span class="checklist__index num">{{ index + 1 }}</span>
-            <div class="checklist__body">
-              <p class="checklist__text">{{ item.text }}</p>
-              <p v-if="item.source_text" class="checklist__source">依据：{{ item.source_text }}</p>
-              <span class="checklist__basis" :class="`checklist__basis--${item.basis}`">
-                {{ item.basis === 'excerpt' ? '原文依据' : '建议步骤' }}
-              </span>
-            </div>
-          </li>
-        </ol>
+        <p v-if="checklistError" class="card__error" role="alert">{{ checklistError }}</p>
+        <template v-if="checklist?.items.length">
+          <ol class="checklist">
+            <li v-for="(item, index) in checklist.items" :key="index" class="checklist__item">
+              <span class="checklist__index num">{{ index + 1 }}</span>
+              <div class="checklist__body">
+                <p class="checklist__text">{{ item.text }}</p>
+                <p v-if="item.source_text" class="checklist__source">
+                  依据：{{ item.source_text }}
+                </p>
+                <span class="checklist__basis" :class="`checklist__basis--${item.basis}`">
+                  {{ item.basis === 'excerpt' ? '原文依据' : '建议步骤' }}
+                </span>
+              </div>
+            </li>
+          </ol>
+        </template>
+        <p v-else-if="canGenerateChecklist" class="card__note">
+          该公告已抽取到申报要素，可按需生成可执行的准备清单。
+        </p>
+        <p v-else class="card__note">
+          该公告命中申报类但未抽取到可用的申报要素，暂无法生成清单，请查看原文核对。
+        </p>
       </section>
 
       <section v-if="article.tags.length" class="card">
@@ -576,6 +641,11 @@ watch(
   color: var(--color-primary);
 }
 
+.btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .btn__icon {
   width: 14px;
   height: 14px;
@@ -601,6 +671,12 @@ watch(
   margin: var(--space-3) 0 0;
   font-size: var(--font-size-xs);
   color: var(--color-text-muted);
+}
+
+.card__error {
+  margin: 0 0 var(--space-3);
+  font-size: var(--font-size-sm);
+  color: var(--color-error);
 }
 
 .card__head {
