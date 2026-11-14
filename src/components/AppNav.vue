@@ -39,17 +39,21 @@ const bellLoading = ref(false)
 const notifications = ref<NotificationItem[]>([])
 const unreadCount = ref(0)
 let bellTimer: ReturnType<typeof setInterval> | null = null
+/** 通知请求序号：全部已读/单条已读会推进版本，迟到的轮询响应不得把已读状态冲回去 */
+let notificationRequestId = 0
 
 async function loadNotifications(): Promise<void> {
+  const requestId = ++notificationRequestId
   bellLoading.value = true
   try {
     const page = await listNotifications(10)
+    if (requestId !== notificationRequestId) return
     notifications.value = page.items
     unreadCount.value = page.unread
   } catch {
     // 铃铛是辅助信息：后端短暂不可用时不打扰用户，保留上一次成功的数据
   } finally {
-    bellLoading.value = false
+    if (requestId === notificationRequestId) bellLoading.value = false
   }
 }
 
@@ -68,6 +72,8 @@ async function openNotification(item: NotificationItem): Promise<void> {
   if (!item.read) {
     try {
       await markNotificationRead(item.id)
+      notificationRequestId += 1
+      bellLoading.value = false
       item.read = true
       unreadCount.value = Math.max(0, unreadCount.value - 1)
     } catch {
@@ -80,6 +86,8 @@ async function openNotification(item: NotificationItem): Promise<void> {
 async function readAllNotifications(): Promise<void> {
   try {
     await markAllNotificationsRead()
+    notificationRequestId += 1
+    bellLoading.value = false
     notifications.value = notifications.value.map((item) => ({ ...item, read: true }))
     unreadCount.value = 0
   } catch {

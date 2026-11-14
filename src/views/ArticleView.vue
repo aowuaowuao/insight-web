@@ -69,6 +69,8 @@ const favorited = ref(false)
 
 /** 详情页的请求序号：路由快速切换时防止旧响应覆盖新文章 */
 let loadRequestId = 0
+/** 清单请求序号：生成成功会作废更早的 GET，切换文章也会作废在途的生成请求 */
+let checklistRequestId = 0
 
 const paragraphs = computed(() =>
   (article.value?.body ?? '')
@@ -219,15 +221,24 @@ const canGenerateChecklist = computed(
 async function generateChecklistAction(force = false): Promise<void> {
   const item = article.value
   if (!item || checklistLoading.value) return
+  const targetId = item.article_id
+  const requestId = ++checklistRequestId
   checklistLoading.value = true
   checklistError.value = ''
   try {
-    checklist.value = await generateChecklist(item.article_id, force)
+    const result = await generateChecklist(targetId, force)
+    // 生成期间可能已切换文章或开始新一轮生成：旧响应绝不能写到当前页面
+    if (requestId !== checklistRequestId || article.value?.article_id !== targetId) return
+    checklist.value = result
     checklistOpen.value = true
   } catch (err) {
-    checklistError.value = err instanceof Error ? err.message : '申报清单生成失败'
+    if (requestId === checklistRequestId && article.value?.article_id === targetId) {
+      checklistError.value = err instanceof Error ? err.message : '申报清单生成失败'
+    }
   } finally {
-    checklistLoading.value = false
+    if (requestId === checklistRequestId && article.value?.article_id === targetId) {
+      checklistLoading.value = false
+    }
   }
 }
 
@@ -266,6 +277,7 @@ function downloadChecklist(): void {
 
 async function load(id: string): Promise<void> {
   const requestId = ++loadRequestId
+  const checklistRequest = ++checklistRequestId
   loading.value = true
   error.value = ''
   article.value = null
@@ -288,7 +300,10 @@ async function load(id: string): Promise<void> {
       .catch(() => undefined)
     void getChecklist(id)
       .then((result) => {
-        if (requestId === loadRequestId) checklist.value = result
+        // 生成成功会推进 checklistRequestId，迟到的 404/null 不得清空新生成的清单
+        if (requestId === loadRequestId && checklistRequest === checklistRequestId) {
+          checklist.value = result
+        }
       })
       .catch(() => undefined)
     void loadRelated(id, detail.category, requestId)

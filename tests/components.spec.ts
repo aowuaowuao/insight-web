@@ -320,4 +320,50 @@ describe('AppNav', () => {
     expect(notificationsApi.markAllNotificationsRead).toHaveBeenCalledTimes(1)
     expect(wrapper.find('.nav__badge').exists()).toBe(false)
   })
+
+  it('迟到的轮询响应不会把「全部已读」的角标冲回来', async () => {
+    const base: NotificationItem = {
+      id: 1,
+      article_id: 'a1',
+      kind: 'project_application',
+      title: '新增项目申报公告',
+      message: '通知一',
+      created_at: '2026-11-14T03:00:00Z',
+      read_at: null,
+      read: false,
+      url: null,
+      source: null,
+      category: null,
+      published_at: null,
+    }
+    let resolvePoll!: (value: unknown) => void
+    notificationsApi.listNotifications
+      .mockResolvedValueOnce({
+        items: [base, { ...base, id: 2, article_id: 'a2' }],
+        total: 2,
+        unread: 2,
+      })
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolvePoll = resolve
+        }),
+      )
+    notificationsApi.markAllNotificationsRead.mockResolvedValue(2)
+
+    const { wrapper } = await mountWithRouter(AppNav)
+    await flushPromises()
+    expect(wrapper.find('.nav__badge').text()).toBe('2')
+
+    await wrapper.find('.nav__bell-btn').trigger('click')
+    await Promise.resolve()
+    await wrapper.find('.nav__bell-readall').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.nav__badge').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('加载中…')
+
+    resolvePoll({ items: [base, { ...base, id: 2, article_id: 'a2' }], total: 2, unread: 2 })
+    await flushPromises()
+    expect(wrapper.find('.nav__badge').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('加载中…')
+  })
 })

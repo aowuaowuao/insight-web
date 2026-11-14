@@ -89,13 +89,17 @@ function listItem(id: string): ArticleListItem {
   }
 }
 
-async function mountView() {
+async function mountViewWithRouter(path = '/article/a1') {
   const router = makeRouter()
-  await router.push('/article/a1')
+  await router.push(path)
   await router.isReady()
   const wrapper = mount(ArticleView, { global: { plugins: [router] } })
   await flushPromises()
-  return wrapper
+  return { wrapper, router }
+}
+
+async function mountView() {
+  return (await mountViewWithRouter()).wrapper
 }
 
 beforeEach(() => {
@@ -316,6 +320,76 @@ describe('ArticleView 申报清单', () => {
       false,
     )
     expect(wrapper.text()).not.toContain('申报准备清单')
+  })
+
+  it('生成期间切换文章时丢弃上一篇文章的迟到响应', async () => {
+    let resolveGenerate!: (value: unknown) => void
+    generateChecklist.mockReturnValue(
+      new Promise((resolve) => {
+        resolveGenerate = resolve
+      }),
+    )
+    getArticle.mockImplementation((id: string) =>
+      Promise.resolve(
+        detail({
+          article_id: id,
+          title: id === 'a1' ? 'A 文章' : 'B 文章',
+          tags: [{ tag: 'project_application', confidence: 0.95, evidence: '申报', engine: 'llm' }],
+          extractions: {
+            project_application: {
+              program_name: {
+                value: '项目',
+                raw_text: '项目',
+                confidence: 0.9,
+                verified: true,
+              },
+            },
+          },
+        }),
+      ),
+    )
+    getChecklist.mockResolvedValue(null)
+
+    const { wrapper, router } = await mountViewWithRouter()
+    const button = wrapper.findAll('button').find((node) => node.text() === '生成申报清单')
+    expect(button).toBeTruthy()
+    await button!.trigger('click')
+
+    await router.push('/article/b2')
+    await flushPromises()
+    expect(wrapper.text()).toContain('B 文章')
+
+    resolveGenerate({
+      ...checklist,
+      article_id: 'a1',
+      items: [{ text: 'A-ITEM', basis: 'excerpt' }],
+    })
+    await flushPromises()
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('A-ITEM')
+  })
+
+  it('生成成功后，迟到的初始 GET 404 不会清空新清单', async () => {
+    let resolveInitialChecklist!: (value: unknown) => void
+    getChecklist.mockReturnValue(
+      new Promise((resolve) => {
+        resolveInitialChecklist = resolve
+      }),
+    )
+    getArticle.mockResolvedValue(projectDetail())
+    generateChecklist.mockResolvedValue(checklist)
+
+    const { wrapper } = await mountViewWithRouter()
+    const button = wrapper.findAll('button').find((node) => node.text() === '生成申报清单')
+    expect(button).toBeTruthy()
+    await button!.trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[role="dialog"]').text()).toContain('准备营业执照副本')
+
+    resolveInitialChecklist(null)
+    await flushPromises()
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('准备营业执照副本')
   })
 
   it('命中申报标签但缺少抽取要素时说明无法生成', async () => {
