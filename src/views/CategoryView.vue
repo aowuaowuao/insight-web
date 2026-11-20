@@ -1046,4 +1046,56 @@ onMounted(() => {
   color: var(--color-text-disabled);
   cursor: not-allowed;
 }
+
+@media (max-width: 768px) {
+  .category {
+    padding: var(--space-3);
+  }
+
+  .tabs {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .tabs .tab {
+    width: 100%;
+    margin-left: 0 !important;
+    justify-content: center;
+  }
+
+  .adv-row {
+    display: block;
+  }
+
+  .adv-row__label {
+    display: block;
+    width: auto;
+    margin-bottom: 6px;
+  }
+
+  .adv-row__body {
+    align-items: flex-start;
+  }
+
+  .chip-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .chip-row .el-button + .el-button {
+    margin-left: 0;
+  }
+}
+
+@media (max-width: 480px) {
+  .category {
+    padding: var(--space-2);
+  }
+
+  .tabs .tab {
+    width: 100%;
+  }
+}
 </style>

@@ -81,6 +81,34 @@ a:active {
   border: 0;
 }
 
+img {
+  max-width: 100%;
+  height: auto;
+}
+
+/* 手机端：Element Plus 弹窗/消息框宽度不能超过视口，避免固定 px 溢出 */
+@media (max-width: 768px) {
+  html,
+  body {
+    overflow-x: hidden;
+  }
+
+  .el-dialog {
+    width: calc(100vw - 24px) !important;
+    max-width: 100%;
+    margin: 5vh auto !important;
+  }
+
+  .el-message-box {
+    width: calc(100vw - 32px) !important;
+    max-width: 100%;
+  }
+
+  .el-message {
+    max-width: calc(100vw - 32px);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

@@ -24,6 +24,7 @@ import {
   User,
 } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/stores/auth'
+import { useNarrowViewport } from '@/composables/useNarrowViewport'
 import {
   listNotifications,
   markAllNotificationsRead,
@@ -39,6 +40,15 @@ const { user, displayName, isAdmin } = storeToRefs(auth)
 
 /** 侧边栏折叠状态（规范模块二（6）） */
 const collapsed = ref(false)
+/** 手机端改为底部导航，进入窄屏时强制展开，避免只剩图标 */
+const { isNarrow } = useNarrowViewport()
+watch(
+  isNarrow,
+  (narrow) => {
+    if (narrow) collapsed.value = false
+  },
+  { immediate: true },
+)
 /** 全局搜索关键词 */
 const globalKeyword = ref('')
 
@@ -597,12 +607,173 @@ onBeforeUnmount(() => {
     display: none !important;
   }
 
+  .side__menu :deep(.el-menu-item) {
+    justify-content: center;
+    padding: 0 !important;
+    font-size: 0;
+  }
+
+  .side__menu :deep(.el-menu-item .el-icon) {
+    font-size: 20px;
+  }
+
+  .side__menu :deep(.el-menu-item span) {
+    display: none;
+  }
+
   .nav__search {
     max-width: 200px;
   }
 
   .nav__time {
     display: none;
+  }
+}
+
+/* 手机：桌面侧边栏降级为底部导航；桌面规则保持不变 */
+@media (max-width: 768px) {
+  .shell {
+    display: block;
+  }
+
+  .side,
+  .side--collapsed {
+    position: fixed;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 50;
+    width: 100%;
+    height: calc(var(--layout-mobile-nav-height) + env(safe-area-inset-bottom));
+    padding: 0 0 env(safe-area-inset-bottom);
+    flex-direction: row;
+    border-top: 1px solid var(--color-split);
+    border-right: 0;
+    background: var(--color-bg);
+    box-shadow: 0 -2px 10px rgb(0 0 0 / 6%);
+  }
+
+  .side__brand,
+  .side__toggle {
+    display: none;
+  }
+
+  .side__menu {
+    display: flex;
+    flex: 1;
+    flex-direction: row;
+    width: 100%;
+    min-width: 0;
+    height: var(--layout-mobile-nav-height);
+    background: transparent;
+  }
+
+  .side__menu :deep(.el-menu-item) {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: 2px;
+    align-items: center;
+    justify-content: center;
+    height: var(--layout-mobile-nav-height);
+    min-width: 0;
+    padding: 0 2px !important;
+    border-radius: 0;
+    font-size: 10px;
+    line-height: 1.1;
+  }
+
+  .side__menu :deep(.el-menu-item .el-icon) {
+    margin: 0;
+    font-size: 19px;
+  }
+
+  .side__menu :deep(.el-menu-item span) {
+    display: block;
+    margin: 0;
+    overflow: hidden;
+    font-size: 10px;
+    line-height: 1.1;
+    white-space: nowrap;
+  }
+
+  .side__menu :deep(.el-menu-item.is-active) {
+    border-top: 2px solid var(--color-primary);
+    background: var(--color-primary-bg);
+  }
+
+  .main {
+    min-height: 100vh;
+    padding-bottom: calc(var(--layout-mobile-nav-height) + env(safe-area-inset-bottom));
+  }
+
+  .nav {
+    height: 56px;
+    padding: 0 var(--space-3);
+    gap: var(--space-2);
+  }
+
+  .nav__brand {
+    display: block;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    font-size: 13px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .nav__search {
+    display: none;
+  }
+
+  .nav__time {
+    display: none;
+  }
+
+  .nav__right {
+    gap: var(--space-1);
+  }
+
+  .nav__name,
+  .nav__caret {
+    display: none;
+  }
+
+  .nav__avatar-btn {
+    padding: 0;
+  }
+
+  .nav__bell-panel {
+    position: fixed;
+    top: 56px;
+    right: var(--space-3);
+    left: var(--space-3);
+    width: auto;
+    max-height: calc(100vh - 140px);
+    overflow: auto;
+  }
+
+  .content {
+    padding: var(--space-3);
+  }
+}
+
+@media (max-width: 480px) {
+  .nav {
+    padding: 0 var(--space-2);
+  }
+
+  .nav__brand {
+    font-size: 12px;
+  }
+
+  .content {
+    padding: var(--space-2);
+  }
+
+  .side__menu :deep(.el-menu-item span) {
+    font-size: 9px;
   }
 }
 </style>

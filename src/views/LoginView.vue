@@ -247,4 +247,25 @@ onBeforeUnmount(stopTimer)
   margin-top: var(--space-1);
   color: var(--color-text-disabled);
 }
+
+@media (max-width: 768px) {
+  .login {
+    padding: 16px 12px;
+  }
+
+  .login__card {
+    width: 100%;
+    max-width: 400px;
+  }
+
+  .login__card :deep(.el-card__body) {
+    padding: 24px 16px;
+  }
+}
+
+@media (max-width: 480px) {
+  .login {
+    padding: 12px 8px;
+  }
+}
 </style>

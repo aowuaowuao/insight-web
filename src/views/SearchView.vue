@@ -1493,4 +1493,49 @@ onMounted(() => {
   color: var(--color-text-disabled);
   cursor: not-allowed;
 }
+
+@media (max-width: 768px) {
+  .search {
+    padding: var(--space-3);
+  }
+
+  .searchbox {
+    flex-wrap: wrap;
+  }
+
+  .searchbox__field {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+
+  .searchbox .el-button + .el-button,
+  .filters .el-button + .el-button,
+  .hot .el-button + .el-button {
+    margin-left: 0;
+  }
+
+  .adv-row {
+    display: block;
+  }
+
+  .adv-row__label {
+    display: block;
+    width: auto;
+    margin-bottom: 6px;
+  }
+
+  .adv-row__body {
+    align-items: flex-start;
+  }
+
+  .adv-row :deep(.el-date-editor) {
+    width: 100%;
+  }
+}
+
+@media (max-width: 480px) {
+  .search {
+    padding: var(--space-2);
+  }
+}
 </style>
