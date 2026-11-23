@@ -359,7 +359,12 @@ function openArticle(id: string): void {
   max-width: var(--layout-max-width);
   margin: 0 auto;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--space-6);
+}
+
+.home > * {
+  min-width: 0;
 }
 
 .home__title {
@@ -446,6 +451,7 @@ function openArticle(id: string): void {
 /* ── 待办明细 ───────────────────────────────────────── */
 .todo {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--space-2);
 }
 
@@ -456,6 +462,7 @@ function openArticle(id: string): void {
 
 .todo__list {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--space-2);
   margin: 0;
   padding: 0;
@@ -481,6 +488,8 @@ function openArticle(id: string): void {
 }
 
 .todo__name {
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   font-size: var(--font-size-sm);
   text-overflow: ellipsis;
@@ -563,6 +572,7 @@ function openArticle(id: string): void {
 /* ── 推荐列表 ───────────────────────────────────────── */
 .rec {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--space-3);
 }
 
@@ -585,10 +595,20 @@ function openArticle(id: string): void {
 
 .rec__list {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--space-2);
   margin: 0;
   padding: 0;
   list-style: none;
+}
+
+.rec__item,
+.rec__card,
+.rec__link,
+.todo__item,
+.todo__link {
+  min-width: 0;
+  max-width: 100%;
 }
 
 .rec__link {
@@ -596,6 +616,9 @@ function openArticle(id: string): void {
   align-items: center;
   gap: var(--space-3);
   width: 100%;
+
+  /* Element Plus 按钮内部包了一层 span，不约束它会按内容最大宽度溢出卡片 */
+  overflow: hidden;
   padding: var(--space-3) var(--space-4);
   border: 1px solid var(--color-split);
   border-radius: var(--radius-card);
@@ -608,6 +631,15 @@ function openArticle(id: string): void {
   transition:
     border-color var(--duration-base) var(--ease-out),
     box-shadow var(--duration-base) var(--ease-out);
+}
+
+.rec__link :deep(> span) {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  min-width: 0;
+  white-space: normal;
 }
 
 .rec__link:hover {
@@ -708,5 +740,64 @@ function openArticle(id: string): void {
   color: var(--color-text-muted);
   font-size: var(--font-size-xs);
   text-align: right;
+}
+
+@media (max-width: 768px) {
+  .home {
+    /* 隐式单列轨道默认按 max-content 撑开，长标题会把整页推到 970px */
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-4);
+  }
+
+  .home > * {
+    min-width: 0;
+  }
+
+  .rec__head {
+    flex-wrap: wrap;
+  }
+
+  .rec,
+  .rec__list {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .rec__item,
+  .rec__card,
+  .rec__link {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .todo,
+  .todo__list {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .todo__item,
+  .todo__link {
+    min-width: 0;
+  }
+
+  .todo__name {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .cards,
+  .quick {
+    grid-template-columns: 1fr;
+  }
+
+  .dist__link {
+    grid-template-columns: 90px 1fr 48px;
+  }
+}
+
+@media (max-width: 480px) {
+  .dist__link {
+    grid-template-columns: 76px 1fr 40px;
+    gap: var(--space-2);
+  }
 }
 </style>

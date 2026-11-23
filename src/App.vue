@@ -10,8 +10,10 @@ const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
 
-// 登录页不显示侧边栏与顶部导航（也不显示账户名）
-const showNav = computed(() => route.meta.hideNav !== true)
+// 登录页不显示侧边栏与顶部导航（也不显示账户名）。
+// 初始导航完成前 route.name 还是 undefined，此时若先渲染 AppNav，
+// 会在登录页触发一次无 token 的 /v1/notifications 轮询并留下 401 控制台错误。
+const showNav = computed(() => route.name !== undefined && route.meta.hideNav !== true)
 
 // 全局请求进度条：并发请求用计数汇总，归零才收起（规范 2.2.1「接口请求 loading 自动显示」）
 const pending = ref(0)
@@ -42,6 +44,7 @@ onBeforeUnmount(() => {
   <el-config-provider :locale="zhCn">
     <div class="app">
       <div v-if="pending > 0" class="app__progress" role="progressbar" aria-label="加载中" />
+      <a v-if="showNav" class="skip-link" href="#main-content">跳到主要内容</a>
       <AppNav v-if="showNav">
         <RouterView v-slot="{ Component }">
           <Transition name="fade" mode="out-in">
@@ -50,7 +53,7 @@ onBeforeUnmount(() => {
         </RouterView>
       </AppNav>
 
-      <main v-else class="app__main">
+      <main v-else id="main-content" class="app__main" tabindex="-1">
         <RouterView v-slot="{ Component }">
           <Transition name="fade" mode="out-in">
             <component :is="Component" />

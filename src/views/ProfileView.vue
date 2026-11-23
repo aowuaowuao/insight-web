@@ -13,6 +13,7 @@ import { ElMessage } from 'element-plus'
 // 显式 import 不会被 ElementPlusResolver 注入样式，必须手动引入 message 的 CSS。
 import 'element-plus/es/components/message/style/css'
 import { useAuthStore } from '@/stores/auth'
+import { useNarrowViewport } from '@/composables/useNarrowViewport'
 import { categoryName } from '@/constants/categories'
 import { formatDateTime, formatRelativeTime } from '@/utils/format'
 import EmptyState from '@/components/EmptyState.vue'
@@ -31,6 +32,7 @@ import {
 import { changePassword } from '@/api/auth'
 
 const auth = useAuthStore()
+const { isNarrow } = useNarrowViewport()
 
 type TabKey = 'favorites' | 'history' | 'settings' | 'password'
 
@@ -277,7 +279,7 @@ const TABS: { key: TabKey; label: string }[] = [
     <!-- 个人信息区（规范模块六（1）） -->
     <el-card class="profile__info" shadow="never">
       <el-avatar :size="56" class="profile__avatar">{{ avatarText }}</el-avatar>
-      <el-descriptions :column="3" class="profile__fields">
+      <el-descriptions :column="isNarrow ? 1 : 3" class="profile__fields">
         <el-descriptions-item label="姓名">{{ auth.displayName || '—' }}</el-descriptions-item>
         <el-descriptions-item label="部门">{{ department }}</el-descriptions-item>
         <el-descriptions-item label="账号创建时间">
@@ -840,5 +842,62 @@ const TABS: { key: TabKey; label: string }[] = [
 
 .rules__item--ok {
   color: var(--color-success);
+}
+
+@media (max-width: 768px) {
+  .profile {
+    padding: var(--space-3);
+  }
+
+  .profile__info {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-3);
+  }
+
+  .profile__fields {
+    width: 100%;
+  }
+
+  .profile__fields :deep(.el-descriptions__table) {
+    width: 100%;
+    table-layout: fixed;
+  }
+
+  .profile__fields :deep(.el-descriptions__label) {
+    display: inline-block;
+    width: 92px;
+    white-space: normal;
+  }
+
+  .list__item {
+    flex-wrap: wrap;
+    gap: var(--space-2);
+  }
+
+  .form {
+    max-width: 100%;
+  }
+
+  .profile :deep(.el-form-item) {
+    display: block;
+  }
+
+  .profile :deep(.el-form-item__label) {
+    display: block;
+    width: auto !important;
+    padding: 0 0 4px;
+    text-align: left;
+  }
+}
+
+@media (max-width: 480px) {
+  .profile {
+    padding: var(--space-2);
+  }
+
+  .profile__fields :deep(.el-descriptions__label) {
+    width: 82px;
+  }
 }
 </style>

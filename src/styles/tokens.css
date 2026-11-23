@@ -104,5 +104,8 @@
   --layout-nav-height: 64px;
   --layout-sidebar-width: 200px;
   --layout-sidebar-collapsed-width: 64px;
+
+  /* 手机端底部导航高度；768px 以下启用 */
+  --layout-mobile-nav-height: 56px;
   --layout-breakpoint-sm: 1366px;
 }

@@ -1239,4 +1239,49 @@ onMounted(() => {
     grid-template-columns: repeat(2, 1fr);
   }
 }
+
+@media (max-width: 768px) {
+  .admin {
+    padding: var(--space-3);
+  }
+
+  .stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .charts {
+    grid-template-columns: 1fr;
+  }
+
+  .toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .toolbar :deep(.el-input),
+  .toolbar :deep(.el-select),
+  .toolbar :deep(.el-date-editor) {
+    width: 100% !important;
+  }
+
+  .admin :deep(.el-tabs__item) {
+    padding: 0 10px;
+    font-size: 13px;
+  }
+}
+
+@media (max-width: 480px) {
+  .admin {
+    padding: var(--space-2);
+  }
+
+  .stats {
+    grid-template-columns: 1fr;
+  }
+
+  .admin :deep(.el-tabs__item) {
+    padding: 0 8px;
+    font-size: 12px;
+  }
+}
 </style>

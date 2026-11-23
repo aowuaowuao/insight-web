@@ -24,6 +24,7 @@ import {
   User,
 } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/stores/auth'
+import { useNarrowViewport } from '@/composables/useNarrowViewport'
 import {
   listNotifications,
   markAllNotificationsRead,
@@ -31,6 +32,7 @@ import {
   type NotificationItem,
 } from '@/api/notifications'
 import { formatRelativeTime } from '@/utils/format'
+import { isImeConfirming } from '@/utils/ime'
 
 const router = useRouter()
 const route = useRoute()
@@ -39,6 +41,15 @@ const { user, displayName, isAdmin } = storeToRefs(auth)
 
 /** 侧边栏折叠状态（规范模块二（6）） */
 const collapsed = ref(false)
+/** 手机端改为底部导航，进入窄屏时强制展开，避免只剩图标 */
+const { isNarrow } = useNarrowViewport()
+watch(
+  isNarrow,
+  (narrow) => {
+    if (narrow) collapsed.value = false
+  },
+  { immediate: true },
+)
 /** 全局搜索关键词 */
 const globalKeyword = ref('')
 
@@ -129,11 +140,15 @@ const menu = computed(() => {
   return items
 })
 
-/** 当前激活菜单：取匹配到的最长前缀，子路径也能高亮父菜单 */
+/** 当前激活菜单：按路径段边界取最长匹配，/searchfoo 不会点亮 /search */
 const activeMenu = computed(() => {
   const matched = [...menu.value]
     .sort((a, b) => b.to.length - a.to.length)
-    .find((item) => (item.to === '/' ? route.path === '/' : route.path.startsWith(item.to)))
+    .find((item) =>
+      item.to === '/'
+        ? route.path === '/'
+        : route.path === item.to || route.path.startsWith(item.to + '/'),
+    )
   return matched?.to ?? route.path
 })
 
@@ -188,6 +203,15 @@ function submitGlobal(): void {
   globalKeyword.value = ''
 }
 
+/** 全局搜索框的 Enter 提交；输入法确认 Enter 不提交 */
+function onGlobalEnter(event: KeyboardEvent): void {
+  // 必须先 preventDefault：输入法确认 Enter 同样会触发表单的隐式提交，
+  // 如果不拦住，用户还在选词就被带走一次搜索。
+  event.preventDefault()
+  if (isImeConfirming(event)) return
+  submitGlobal()
+}
+
 const foldIcon = computed(() => (collapsed.value ? Expand : Fold))
 
 onBeforeUnmount(() => {
@@ -199,7 +223,7 @@ onBeforeUnmount(() => {
 <template>
   <div class="shell" :class="{ 'shell--collapsed': collapsed }">
     <!-- 侧边栏（规范模块二（6）） -->
-    <aside class="side" :class="{ 'side--collapsed': collapsed }" aria-label="侧边导航">
+    <nav class="side" :class="{ 'side--collapsed': collapsed }" aria-label="侧边导航">
       <RouterLink to="/" class="side__brand">
         <span class="side__logo" aria-hidden="true">
           <svg viewBox="0 0 32 32" width="26" height="26">
@@ -212,25 +236,20 @@ onBeforeUnmount(() => {
         <span v-show="!collapsed" class="side__name">政策情报助手</span>
       </RouterLink>
 
-      <el-menu
-        class="side__menu"
-        :default-active="activeMenu"
-        :collapse="collapsed"
-        :collapse-transition="false"
-        router
-      >
-        <el-menu-item
-          v-for="item in menu"
-          :key="item.to"
-          :index="item.to"
-          class="side__link"
-          :class="{ 'side__link--active': activeMenu === item.to }"
-          :aria-label="item.label"
-        >
-          <el-icon><component :is="item.icon" /></el-icon>
-          <template #title>{{ item.label }}</template>
-        </el-menu-item>
-      </el-menu>
+      <ul class="side__menu">
+        <li v-for="item in menu" :key="item.to">
+          <RouterLink
+            :to="item.to"
+            class="side__link"
+            :class="{ 'side__link--active': activeMenu === item.to }"
+            :aria-label="item.label"
+            :aria-current="activeMenu === item.to ? 'page' : undefined"
+          >
+            <el-icon><component :is="item.icon" /></el-icon>
+            <span class="side__link-label">{{ item.label }}</span>
+          </RouterLink>
+        </li>
+      </ul>
 
       <el-button
         class="side__toggle"
@@ -242,7 +261,7 @@ onBeforeUnmount(() => {
         <el-icon><component :is="foldIcon" /></el-icon>
         <span v-show="!collapsed">收起</span>
       </el-button>
-    </aside>
+    </nav>
 
     <!-- 主体 -->
     <div class="main">
@@ -257,8 +276,9 @@ onBeforeUnmount(() => {
           v-model="globalKeyword"
           class="nav__search"
           placeholder="全局搜索公告关键词…"
+          aria-label="全局搜索公告关键词"
           clearable
-          @keyup.enter="submitGlobal"
+          @keydown.enter="onGlobalEnter"
         >
           <template #append>
             <el-button :icon="Search" @click="submitGlobal">搜索</el-button>
@@ -334,7 +354,7 @@ onBeforeUnmount(() => {
         </div>
       </header>
 
-      <main class="content">
+      <main id="main-content" class="content" tabindex="-1">
         <slot />
       </main>
     </div>
@@ -384,22 +404,43 @@ onBeforeUnmount(() => {
 }
 
 .side__menu {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
   border-right: none;
   background: transparent;
+  list-style: none;
 }
 
-.side__menu :deep(.el-menu-item) {
+.side__menu > li {
+  display: flex;
+  min-width: 0;
+}
+
+.side__link {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
   height: 42px;
+  padding: 0 var(--space-4);
   border-radius: var(--radius-base);
   color: var(--color-text-secondary);
+  text-decoration: none;
+  white-space: nowrap;
+  transition:
+    background-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
 }
 
-.side__menu :deep(.el-menu-item:hover) {
+.side__link:hover {
   background: var(--color-primary-bg);
   color: var(--color-primary-hover);
 }
 
-.side__menu :deep(.el-menu-item.is-active) {
+.side__link--active {
   background: var(--color-primary-bg);
   color: var(--color-primary);
   font-weight: var(--font-weight-medium);
@@ -597,12 +638,178 @@ onBeforeUnmount(() => {
     display: none !important;
   }
 
+  .side__link {
+    justify-content: center;
+    padding: 0 !important;
+    font-size: 0;
+  }
+
+  .side__link .el-icon {
+    font-size: 20px;
+  }
+
+  .side__link .side__link-label {
+    display: none;
+  }
+
   .nav__search {
     max-width: 200px;
   }
 
   .nav__time {
     display: none;
+  }
+}
+
+/* 手机：桌面侧边栏降级为底部导航；桌面规则保持不变 */
+@media (max-width: 768px) {
+  .shell {
+    display: block;
+  }
+
+  .side,
+  .side--collapsed {
+    position: fixed;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 50;
+    width: 100%;
+    height: calc(var(--layout-mobile-nav-height) + env(safe-area-inset-bottom));
+    padding: 0 0 env(safe-area-inset-bottom);
+    flex-direction: row;
+    border-top: 1px solid var(--color-split);
+    border-right: 0;
+    background: var(--color-bg);
+    box-shadow: 0 -2px 10px rgb(0 0 0 / 6%);
+  }
+
+  .side__brand,
+  .side__toggle {
+    display: none;
+  }
+
+  .side__menu {
+    display: flex;
+    flex: 1;
+    flex-direction: row;
+    width: 100%;
+    min-width: 0;
+    height: var(--layout-mobile-nav-height);
+    background: transparent;
+  }
+
+  .side__menu > li {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .side__link {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: 2px;
+    align-items: center;
+    justify-content: center;
+    height: var(--layout-mobile-nav-height);
+    min-width: 0;
+    padding: 0 2px !important;
+    border-radius: 0;
+    font-size: 10px;
+    line-height: 1.1;
+  }
+
+  .side__link .el-icon {
+    margin: 0;
+    font-size: 19px;
+  }
+
+  .side__link .side__link-label {
+    display: block;
+    margin: 0;
+    overflow: hidden;
+    font-size: 10px;
+    line-height: 1.1;
+    white-space: nowrap;
+  }
+
+  .side__link--active {
+    border-top: 2px solid var(--color-primary);
+    background: var(--color-primary-bg);
+  }
+
+  .main {
+    min-height: 100vh;
+    padding-bottom: calc(var(--layout-mobile-nav-height) + env(safe-area-inset-bottom));
+  }
+
+  .nav {
+    height: 56px;
+    padding: 0 var(--space-3);
+    gap: var(--space-2);
+  }
+
+  .nav__brand {
+    display: block;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    font-size: 13px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .nav__search {
+    display: none;
+  }
+
+  .nav__time {
+    display: none;
+  }
+
+  .nav__right {
+    gap: var(--space-1);
+  }
+
+  .nav__name,
+  .nav__caret {
+    display: none;
+  }
+
+  .nav__avatar-btn {
+    padding: 0;
+  }
+
+  .nav__bell-panel {
+    position: fixed;
+    top: 56px;
+    right: var(--space-3);
+    left: var(--space-3);
+    width: auto;
+    max-height: calc(100vh - 140px);
+    overflow: auto;
+  }
+
+  .content {
+    padding: var(--space-3);
+  }
+}
+
+@media (max-width: 480px) {
+  .nav {
+    padding: 0 var(--space-2);
+  }
+
+  .nav__brand {
+    font-size: 12px;
+  }
+
+  .content {
+    padding: var(--space-2);
+  }
+
+  .side__link .side__link-label {
+    font-size: 9px;
   }
 }
 </style>

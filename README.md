@@ -39,7 +39,7 @@ Nginx 负责 Gzip、`/assets` 一年 immutable 缓存、SPA history 回退，并
 
 ## 测试与门禁
 
-- 测试框架：Vitest + @vue/test-utils + jsdom，用例在 `tests/`，共 19 个 spec、216 条用例；
+- 测试框架：Vitest + @vue/test-utils + jsdom，用例在 `tests/`，共 22 个 spec、231 条用例；
 - 覆盖范围：`src/components`（七个公共组件的 Props/Events 与导航交互）、`src/stores/auth`、`src/utils`、`src/api/http.ts`；当前实测 87.8% 语句 / 81.6% 分支；
 - 提交前建议依次跑：`npm run typecheck` → `npm run lint` → `npm run lint:style` → `npm test` → `npm run build`；
 - Git 钩子：husky `pre-commit` 跑 lint-staged（ESLint + Prettier），`commit-msg` 用 commitlint 校验 Conventional Commits；

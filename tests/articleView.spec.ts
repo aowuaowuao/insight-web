@@ -191,6 +191,30 @@ describe('ArticleView 关键要素', () => {
     expect(wrapper.findAll('.field__empty').length).toBeGreaterThanOrEqual(8)
   })
 
+  it('长关键信息只展示摘要，完整值保留在 title 中', async () => {
+    const longValue = '长'.repeat(240)
+    getArticle.mockResolvedValue(
+      detail({
+        category: 'industry_policy',
+        extractions: {
+          industry_policy: {
+            key_measures: {
+              value: longValue,
+              raw_text: longValue,
+              confidence: 0.9,
+              verified: true,
+            },
+          },
+        },
+      }),
+    )
+    const wrapper = await mountView()
+    const field = wrapper.findAll('.field__value').find((node) => node.text().startsWith('长'))
+    expect(field).toBeTruthy()
+    expect(field!.text()).not.toContain(longValue)
+    expect(field!.attributes('title')).toBe(longValue)
+  })
+
   it('行业政策按本类字段展示，不套用项目申报模板', async () => {
     getArticle.mockResolvedValue(
       detail({

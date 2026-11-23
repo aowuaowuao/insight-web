@@ -18,6 +18,7 @@ const notificationsApi = vi.hoisted(() => ({
 
 vi.mock('@/api/notifications', () => notificationsApi)
 
+import App from '@/App.vue'
 import AppNav from '@/components/AppNav.vue'
 import AppPager from '@/components/AppPager.vue'
 import ArticleCard from '@/components/ArticleCard.vue'
@@ -223,6 +224,23 @@ describe('ArticleCard', () => {
   })
 })
 
+describe('App shell 无障碍', () => {
+  it('skip-link 指向 main-content，且目标可通过 tabindex 聚焦', async () => {
+    const { wrapper } = await mountWithRouter(App)
+    await flushPromises()
+    const link = wrapper.find('.skip-link')
+    expect(link.exists()).toBe(true)
+    expect(link.attributes('href')).toBe('#main-content')
+    const main = wrapper.find('main#main-content')
+    expect(main.exists()).toBe(true)
+    expect(main.attributes('tabindex')).toBe('-1')
+    document.body.appendChild(wrapper.element)
+    ;(main.element as HTMLElement).focus()
+    expect(document.activeElement).toBe(main.element)
+    wrapper.unmount()
+  })
+})
+
 describe('AppNav', () => {
   it('渲染四个导航入口，并在折叠时切换 class', async () => {
     const { wrapper } = await mountWithRouter(AppNav)
@@ -230,6 +248,21 @@ describe('AppNav', () => {
     expect(wrapper.find('.shell').classes()).not.toContain('shell--collapsed')
     await wrapper.find('.side__toggle').trigger('click')
     expect(wrapper.find('.shell').classes()).toContain('shell--collapsed')
+  })
+
+  it('侧边导航是 nav landmark，链接可用 Tab 聚焦', async () => {
+    const { wrapper } = await mountWithRouter(AppNav)
+    const nav = wrapper.find('nav.side')
+    expect(nav.exists()).toBe(true)
+    expect(nav.attributes('aria-label')).toBe('侧边导航')
+    expect(nav.element.querySelectorAll('ul.side__menu > li > a.side__link').length).toBe(4)
+    const links = wrapper.findAll('.side__link')
+    expect(links).toHaveLength(4)
+    for (const link of links) {
+      expect(link.element.tagName).toBe('A')
+      expect((link.element as HTMLElement).tabIndex).toBe(0)
+      expect(link.attributes('role')).toBeUndefined()
+    }
   })
 
   it('用户菜单可展开，退出登录跳转登录页', async () => {
@@ -246,13 +279,45 @@ describe('AppNav', () => {
     const { wrapper, router } = await mountWithRouter(AppNav)
     const input = wrapper.find('.nav__search input')
     await input.setValue(' 资金补贴 ')
-    await input.trigger('keyup.enter')
+    await input.trigger('keydown.enter')
+    await flushPromises()
+    expect(router.currentRoute.value.name).toBe('search')
+    expect(router.currentRoute.value.query.q).toBe('资金补贴')
+  })
+
+  it('输入法确认 Enter 不提交全局搜索，普通 Enter 才跳转', async () => {
+    const { wrapper, router } = await mountWithRouter(AppNav)
+    const input = wrapper.find('.nav__search input')
+    expect(input.attributes('aria-label')).toBe('全局搜索公告关键词')
+    await input.setValue('资金补贴')
+
+    input.element.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'Enter',
+        isComposing: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    )
+    await flushPromises()
+    expect(router.currentRoute.value.name).toBe('home')
+    expect((input.element as HTMLInputElement).value).toBe('资金补贴')
+
+    await input.trigger('keydown.enter')
     await flushPromises()
     expect(router.currentRoute.value.name).toBe('search')
     expect(router.currentRoute.value.query.q).toBe('资金补贴')
   })
 
   it('当前路由只按路径段匹配，/searchfoo 不会点亮检索入口', async () => {
+    const { wrapper, router } = await mountWithRouter(AppNav)
+    await router.push('/searchfoo')
+    await router.isReady()
+    expect(wrapper.findAll('.side__link--active')).toHaveLength(0)
+    expect(wrapper.findAll('[aria-current="page"]')).toHaveLength(0)
+  })
+
+  it('有效检索页只点亮检索入口并标记 aria-current', async () => {
     const { wrapper, router } = await mountWithRouter(AppNav)
     await router.push('/search')
     await router.isReady()
@@ -261,6 +326,7 @@ describe('AppNav', () => {
       .filter((l) => l.classes().includes('side__link--active'))
     expect(active).toHaveLength(1)
     expect(active[0]!.attributes('aria-label')).toBe('信息检索')
+    expect(active[0]!.attributes('aria-current')).toBe('page')
   })
 
   it('铃铛显示未读数，点击通知标记已读并跳到详情', async () => {

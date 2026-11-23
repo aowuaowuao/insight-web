@@ -81,6 +81,59 @@ a:active {
   border: 0;
 }
 
+/* 键盘用户可跳过侧栏与顶部导航；默认移出视口，聚焦时显示 */
+.skip-link {
+  position: fixed;
+  top: var(--space-2);
+  left: var(--space-2);
+  z-index: 1000;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-base);
+  background: var(--color-primary);
+  color: var(--color-text-inverse);
+  text-decoration: none;
+  transform: translateY(calc(-100% - var(--space-2)));
+  transition: transform var(--duration-fast) var(--ease-out);
+}
+
+.skip-link:focus-visible {
+  transform: translateY(0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skip-link {
+    transition: none;
+  }
+}
+
+img {
+  max-width: 100%;
+  height: auto;
+}
+
+/* 手机端：Element Plus 弹窗/消息框宽度不能超过视口，避免固定 px 溢出 */
+@media (max-width: 768px) {
+  html,
+  body {
+    overflow-x: hidden;
+  }
+
+  .el-dialog {
+    width: calc(100vw - 24px) !important;
+    max-width: 100%;
+    margin: 5vh auto !important;
+  }
+
+  .el-message-box {
+    width: calc(100vw - 32px) !important;
+    max-width: 100%;
+  }
+
+  .el-message {
+    max-width: calc(100vw - 32px);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

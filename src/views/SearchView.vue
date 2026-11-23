@@ -36,6 +36,7 @@ import { listTags, tagName, type TagDef } from '@/api/tags'
 import { readJson, writeJson } from '@/utils/storage'
 import { STORAGE_KEYS } from '@/utils/storageKeys'
 import { isRangeInverted, isYmd, resolveRange, type TimeRange } from '@/utils/dateRange'
+import { isImeConfirming } from '@/utils/ime'
 import {
   HIGH_RELEVANCE_FILTER_SCORE,
   highRelevanceSummary,
@@ -339,6 +340,15 @@ function pickSuggestion(word: string): void {
 
 /** ↑/↓ 在建议间移动，Enter 选中，Esc 关闭（规范要求键盘可达） */
 function onInputKeydown(event: KeyboardEvent): void {
+  // 输入法组合期间的 ↑/↓/Enter 属于候选词操作，不能拿来做建议导航或提交。
+  // Enter 仍要 preventDefault，否则会触发表单的隐式提交。
+  // keyCode 229 只在 Enter 上当作输入法确认：部分移动端虚拟键盘对方向键
+  // 也会给 229，若一律拦截，建议列表的方向键导航会被误吞。
+  if (event.key === 'Enter' && isImeConfirming(event)) {
+    event.preventDefault()
+    return
+  }
+  if (event.isComposing) return
   const list = suggestions.value
   if (!list.length) return
   if (event.key === 'ArrowDown') {
@@ -1492,5 +1502,50 @@ onMounted(() => {
   border-color: var(--color-border);
   color: var(--color-text-disabled);
   cursor: not-allowed;
+}
+
+@media (max-width: 768px) {
+  .search {
+    padding: var(--space-3);
+  }
+
+  .searchbox {
+    flex-wrap: wrap;
+  }
+
+  .searchbox__field {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+
+  .searchbox .el-button + .el-button,
+  .filters .el-button + .el-button,
+  .hot .el-button + .el-button {
+    margin-left: 0;
+  }
+
+  .adv-row {
+    display: block;
+  }
+
+  .adv-row__label {
+    display: block;
+    width: auto;
+    margin-bottom: 6px;
+  }
+
+  .adv-row__body {
+    align-items: flex-start;
+  }
+
+  .adv-row :deep(.el-date-editor) {
+    width: 100%;
+  }
+}
+
+@media (max-width: 480px) {
+  .search {
+    padding: var(--space-2);
+  }
 }
 </style>
